@@ -24,6 +24,8 @@ export default function TerminalView({ session, host, onBack, onSessionUpdate }:
   const [showKillConfirm, setShowKillConfirm] = useState(false);
   const [restarting, setRestarting] = useState(false);
   const fitTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const currentSessionIdRef = useRef(session.id);
+  const attachedSessionIdRef = useRef(session.id);
 
   // Use window.location.origin in dev (goes through Vite proxy)
   // In production, fall back to host's address
@@ -35,6 +37,40 @@ export default function TerminalView({ session, host, onBack, onSessionUpdate }:
   useEffect(() => {
     setCurrentSession(session);
   }, [session]);
+
+  const fitAndResize = useCallback(() => {
+    const term = terminalRef.current;
+    const fitAddon = fitAddonRef.current;
+    const socket = socketRef.current;
+
+    if (!term || !fitAddon) return;
+
+    try {
+      fitAddon.fit();
+      socket?.resize(currentSessionIdRef.current, term.cols, term.rows);
+    } catch {
+      // FitAddon can throw while container is detached/hidden during route changes.
+    }
+  }, []);
+
+  const scheduleFitAndResize = useCallback((delay = 100) => {
+    if (fitTimeoutRef.current) clearTimeout(fitTimeoutRef.current);
+    fitTimeoutRef.current = setTimeout(fitAndResize, delay);
+  }, [fitAndResize]);
+
+  useEffect(() => {
+    const previousSessionId = attachedSessionIdRef.current;
+    currentSessionIdRef.current = session.id;
+
+    if (previousSessionId === session.id) return;
+
+    socketRef.current?.detach(previousSessionId);
+    terminalRef.current?.clear();
+    socketRef.current?.attach(session.id);
+    attachedSessionIdRef.current = session.id;
+    terminalRef.current?.focus();
+    scheduleFitAndResize(0);
+  }, [session.id, scheduleFitAndResize]);
 
   // Initialize terminal + socket
   useEffect(() => {
@@ -77,10 +113,15 @@ export default function TerminalView({ session, host, onBack, onSessionUpdate }:
     const fitAddon = new FitAddon();
     term.loadAddon(fitAddon);
     term.open(termRef.current);
+    term.focus();
 
     // Wait for font to load before fitting — prevents spacing issues
     document.fonts.ready.then(() => {
-      fitAddon.fit();
+      fitAndResize();
+      requestAnimationFrame(() => {
+        fitAndResize();
+        term.focus();
+      });
     });
 
     terminalRef.current = term;
@@ -94,16 +135,19 @@ export default function TerminalView({ session, host, onBack, onSessionUpdate }:
       setConnectionState(state);
     };
 
-    socket.onOutput = (_sessionId, data) => {
+    socket.onOutput = (sessionId, data) => {
+      if (sessionId !== currentSessionIdRef.current) return;
       term.write(data);
     };
 
-    socket.onSnapshot = (_sessionId, data) => {
+    socket.onSnapshot = (sessionId, data) => {
+      if (sessionId !== currentSessionIdRef.current) return;
       term.clear();
       term.write(data);
     };
 
-    socket.onStatus = (_sessionId, status, _pid, exitCode) => {
+    socket.onStatus = (sessionId, status, _pid, exitCode) => {
+      if (sessionId !== currentSessionIdRef.current) return;
       const newStatus = status as SessionStatus;
       setCurrentSession((prev) => {
         const updated = { ...prev, status: newStatus, exitCode };
@@ -126,24 +170,18 @@ export default function TerminalView({ session, host, onBack, onSessionUpdate }:
 
     // Connect and attach (attach is queued until connection opens)
     socket.connect(hostUrl);
-    socket.attach(currentSession.id);
+    socket.attach(currentSessionIdRef.current);
+    attachedSessionIdRef.current = currentSessionIdRef.current;
 
     // Input handler
     const inputData = term.onData((data) => {
-      socket.sendInput(currentSession.id, data);
+      socket.sendInput(currentSessionIdRef.current, data);
     });
 
-    // Resize handler with debounce
+    // Resize handler with debounce. Browser zoom and app font zoom both change
+    // character-cell geometry, so always propagate new cols/rows to PTY.
     const handleResize = () => {
-      if (fitTimeoutRef.current) clearTimeout(fitTimeoutRef.current);
-      fitTimeoutRef.current = setTimeout(() => {
-        if (fitAddonRef.current && terminalRef.current) {
-          fitAddonRef.current.fit();
-          if (socket.connectionState === 'connected') {
-            socket.resize(currentSession.id, terminalRef.current.cols, terminalRef.current.rows);
-          }
-        }
-      }, 100);
+      scheduleFitAndResize(100);
     };
 
     const resizeObserver = new ResizeObserver(handleResize);
@@ -164,7 +202,7 @@ export default function TerminalView({ session, host, onBack, onSessionUpdate }:
       if (visible && socket.connectionState !== 'connected') {
         // Reconnect and re-attach
         socket.connect(hostUrl);
-        socket.attach(currentSession.id);
+        socket.attach(currentSessionIdRef.current);
       }
     });
 
@@ -172,7 +210,7 @@ export default function TerminalView({ session, host, onBack, onSessionUpdate }:
     const connCleanup = onConnectionChange((online) => {
       if (online && socket.connectionState !== 'connected') {
         socket.connect(hostUrl);
-        socket.attach(currentSession.id);
+        socket.attach(currentSessionIdRef.current);
       }
     });
 
@@ -188,19 +226,41 @@ export default function TerminalView({ session, host, onBack, onSessionUpdate }:
       releaseWakeLockCleanup();
       releaseWakeLock();
       if (fitTimeoutRef.current) clearTimeout(fitTimeoutRef.current);
-      socket.detach(currentSession.id);
+      socket.detach(attachedSessionIdRef.current);
       socket.disconnect();
       term.dispose();
     };
-  }, []); // Only on mount
+  }, [fitAndResize, scheduleFitAndResize, hostUrl]);
 
-  // Update font size
+  // Keep latest session id available to stable terminal callbacks.
   useEffect(() => {
-    if (terminalRef.current) {
-      terminalRef.current.options.fontSize = fontSize;
-      fitAddonRef.current?.fit();
-    }
-  }, [fontSize]);
+    currentSessionIdRef.current = currentSession.id;
+  }, [currentSession.id]);
+
+  // Update font size and notify PTY. Do one immediate fit plus a next-frame fit
+  // because xterm measures cell dimensions after DOM/font style flush.
+  useEffect(() => {
+    const term = terminalRef.current;
+    if (!term) return;
+
+    term.options.fontSize = fontSize;
+    fitAndResize();
+    const frame = requestAnimationFrame(fitAndResize);
+
+    return () => cancelAnimationFrame(frame);
+  }, [fontSize, fitAndResize]);
+
+  const changeFontSize = (delta: number) => {
+    setFontSize((size) => Math.max(8, Math.min(24, size + delta)));
+    requestAnimationFrame(() => {
+      fitAndResize();
+      terminalRef.current?.focus();
+    });
+  };
+
+  const keepTerminalFocus = (event: React.MouseEvent<HTMLButtonElement>) => {
+    event.preventDefault();
+  };
 
   const handleKill = async () => {
     await api.killSession(currentSession.id);
@@ -229,7 +289,7 @@ export default function TerminalView({ session, host, onBack, onSessionUpdate }:
   };
 
   const sendKey = (data: string) => {
-    socketRef.current?.sendInput(currentSession.id, data);
+    socketRef.current?.sendInput(currentSessionIdRef.current, data);
   };
 
   const connClass = connectionState === 'connected' ? 'conn-connected' :
@@ -268,8 +328,8 @@ export default function TerminalView({ session, host, onBack, onSessionUpdate }:
           {restarting && (
             <button className="btn btn-secondary btn-sm" disabled>Restarting...</button>
           )}
-          <button className="btn btn-ghost btn-sm" onClick={() => setFontSize((f) => Math.min(f + 2, 24))}>A+</button>
-          <button className="btn btn-ghost btn-sm" onClick={() => setFontSize((f) => Math.max(f - 2, 8))}>A-</button>
+          <button className="btn btn-ghost btn-sm" onMouseDown={keepTerminalFocus} onClick={() => changeFontSize(2)}>A+</button>
+          <button className="btn btn-ghost btn-sm" onMouseDown={keepTerminalFocus} onClick={() => changeFontSize(-2)}>A-</button>
         </div>
       </div>
 

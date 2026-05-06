@@ -1,0 +1,43 @@
+{
+  "commands": [
+    {
+      "id": "pi",
+      "label": "Pi Coding Agent",
+      "command": "pi",
+      "allowedCwdRoots": ["/home/pi", "/tmp"]
+    },
+    {
+      "id": "claude",
+      "label": "Claude Coding Agent",
+      "command": "claude",
+      "allowedCwdRoots": ["/home/pi", "/tmp"]
+    },
+    {
+      "id": "opencode",
+      "label": "OpenCode",
+      "command": "opencode",
+      "allowedCwdRoots": ["/home/pi", "/tmp"]
+    },
+    {
+      "id": "codex",
+      "label": "Codex Coding Agent",
+      "command": "codex",
+      "allowedCwdRoots": ["/home/pi", "/tmp"]
+    },
+    {
+      "id": "shell",
+      "label": "Interactive Shell",
+      "command": "bash",
+      "allowedCwdRoots": ["/home/pi", "/tmp"],
+      "requiresConfirmation": true
+    }
+  ],
+  "hosts": [
+    {
+      "id": "local",
+      "name": "This Machine",
+      "address": "localhost",
+      "port": 3000
+    }
+  ]
+}

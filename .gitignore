@@ -1,0 +1,45 @@
+# Dependencies
+server/node_modules/
+tui-web/node_modules/
+
+# Build output
+tui-web/dist/
+tui-web/tsconfig.tsbuildinfo
+
+# Vite cache
+.vite/
+web/.vite/
+tui-web/.vite/
+node_modules/.vite/
+
+# SQLite database (runtime data)
+server/data/
+
+# Environment variables (contains auth tokens)
+server/.env
+
+# Native addon build artifacts
+server/node_modules/.cache/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editor files
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+
+# Logs
+*.log
+logs/
+
+# Runtime / temp
+tmp/
+temp/
+
+# Screenshots (local testing artifacts)
+*.png
+!tui-web/public/*.png

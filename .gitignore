@@ -3,6 +3,7 @@ server/node_modules/
 tui-web/node_modules/
 
 # Build output
+server/dist/
 tui-web/dist/
 tui-web/tsconfig.tsbuildinfo
 
@@ -40,6 +41,13 @@ logs/
 tmp/
 temp/
 
+# AI session state
+.claude/
+
 # Screenshots (local testing artifacts)
 *.png
 !tui-web/public/*.png
+
+# Packaging build artifacts
+packaging/build/
+packaging/dist/

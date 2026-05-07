@@ -19,6 +19,7 @@ export interface HostConfig {
 export interface Config {
   port: number;
   authToken: string;
+  authRequired: boolean;
   commands: CommandAllowlistEntry[];
   hosts: HostConfig[];
   maxScrollback: number;
@@ -37,7 +38,8 @@ import { fileURLToPath } from 'url';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 function loadDefaultConfig(): { commands: CommandAllowlistEntry[]; hosts: HostConfig[] } {
-  const configPath = resolve(__dirname, '..', 'default-config.json');
+  // REMOTE_AGENT_TUI_CONFIG overrides the config file path (for packaged installs)
+  const configPath = process.env.REMOTE_AGENT_TUI_CONFIG || resolve(__dirname, '..', 'default-config.json');
   if (existsSync(configPath)) {
     return JSON.parse(readFileSync(configPath, 'utf-8'));
   }
@@ -67,16 +69,9 @@ function loadDefaultConfig(): { commands: CommandAllowlistEntry[]; hosts: HostCo
         command: 'codex',
         allowedCwdRoots: ['/home/pi/projects', process.env.HOME || '/root', '/tmp'],
       },
-      {
-        id: 'shell',
-        label: 'Interactive Shell',
-        command: 'bash',
-        allowedCwdRoots: [process.env.HOME || '/root', '/tmp'],
-        requiresConfirmation: true,
-      },
     ],
     hosts: [
-      { id: 'local', name: 'This Machine', address: 'localhost', port: 3000 },
+      { id: 'local', name: 'This Machine', address: 'localhost', port: 5555 },
     ],
   };
 }
@@ -87,8 +82,7 @@ const defaults = loadDefaultConfig();
 // This is always injected at runtime so config files don't need to hard-code it
 const home = process.env.HOME || '/root';
 const commandsWithHome = defaults.commands.map((cmd) => {
-  const roots = new Set(cmd.allowedCwdRoots);
-  roots.add(home);
+  const roots = new Set<string>(cmd.allowedCwdRoots);
   // Also add common subdirectories of home
   for (const root of [...roots]) {
     if (root.startsWith('/home/pi')) {
@@ -97,12 +91,14 @@ const commandsWithHome = defaults.commands.map((cmd) => {
       if (relPath) roots.add(home + relPath);
     }
   }
+  roots.add(home);
   return { ...cmd, allowedCwdRoots: [...roots] };
 });
 
 export const config: Config = {
-  port: parseInt(process.env.PORT || '3000', 10),
-  authToken: process.env.AUTH_TOKEN || 'dev-token-change-me',
+  port: parseInt(process.env.PORT || '5555', 10),
+  authToken: process.env.AUTH_TOKEN || '',  // Empty = no auth (for trusted networks); set a token to require auth
+  authRequired: !!(process.env.AUTH_TOKEN && process.env.AUTH_TOKEN.length > 0),
   commands: commandsWithHome,
   hosts: defaults.hosts,
   maxScrollback: 10000,

@@ -27,6 +27,16 @@ export class TerminalSocket {
   private token = '';
   private _connectionState: ConnectionState = 'disconnected';
   private pendingAttach: string | null = null; // session to attach once connected
+  private readonly encoder = new TextEncoder();
+  private inputFramePrefixSessionId = '';
+  private inputFramePrefix: Uint8Array | null = null;
+  private readonly perfEnabled = (() => {
+    try {
+      return new URLSearchParams(window.location.search).has('perf');
+    } catch {
+      return false;
+    }
+  })();
 
   // Callbacks
   onOutput: OutputCallback = () => {};
@@ -137,7 +147,61 @@ export class TerminalSocket {
   }
 
   sendInput(sessionId: string, data: string): void {
-    this.sendControl({ v: PROTOCOL_VERSION, type: 'input', sessionId, data });
+    // Hot path — use binary framing to bypass per-keystroke JSON serialization,
+    // Zod validation, and repeated session-id encoding. Frame format:
+    // [0x00] [1-byte sessionId length] [sessionId UTF-8] [raw terminal data]
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+
+    if (!this.inputFramePrefix || this.inputFramePrefixSessionId !== sessionId) {
+      const sessionIdBytes = this.encoder.encode(sessionId);
+      if (sessionIdBytes.length > 255) return;
+      const prefix = new Uint8Array(2 + sessionIdBytes.length);
+      prefix[0] = FRAME_BINARY;
+      prefix[1] = sessionIdBytes.length;
+      prefix.set(sessionIdBytes, 2);
+      this.inputFramePrefix = prefix;
+      this.inputFramePrefixSessionId = sessionId;
+    }
+
+    const start = this.perfEnabled ? performance.now() : 0;
+    const dataBytes = this.encodeTerminalInput(data);
+    const frame = new Uint8Array(this.inputFramePrefix.length + dataBytes.length);
+    frame.set(this.inputFramePrefix);
+    frame.set(dataBytes, this.inputFramePrefix.length);
+    this.ws.send(frame);
+
+    if (this.perfEnabled) {
+      const perf = ((window as any).__terminalPerf ||= { inputFrames: 0, inputBytes: 0, inputEncodeMs: 0 });
+      perf.inputFrames += 1;
+      perf.inputBytes += dataBytes.length;
+      perf.inputEncodeMs += performance.now() - start;
+    }
+  }
+
+  private encodeTerminalInput(data: string): Uint8Array {
+    // Common typing path: single printable/control ASCII char.
+    // Avoid TextEncoder overhead for the frequent one-char case.
+    if (data.length === 1) {
+      const code = data.charCodeAt(0);
+      if (code <= 0x7f) return Uint8Array.of(code);
+    }
+
+    // Fast path for short all-ASCII sequences (arrows, escape sequences,
+    // paste chunks without unicode). Falls back to TextEncoder for UTF-8.
+    let ascii = true;
+    for (let i = 0; i < data.length; i++) {
+      if (data.charCodeAt(i) > 0x7f) {
+        ascii = false;
+        break;
+      }
+    }
+    if (ascii) {
+      const out = new Uint8Array(data.length);
+      for (let i = 0; i < data.length; i++) out[i] = data.charCodeAt(i);
+      return out;
+    }
+
+    return this.encoder.encode(data);
   }
 
   resize(sessionId: string, cols: number, rows: number): void {

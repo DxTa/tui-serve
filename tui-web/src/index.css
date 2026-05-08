@@ -48,6 +48,13 @@
 
   .terminal-container .xterm-viewport {
     width: 100% !important;
+    /* Enable native touch scrolling on the viewport.
+       The xterm-screen canvas overlays this element and intercepts
+       touch events; our JS touch handler routes vertical swipes here,
+       but we still want browser-native momentum scrolling to work
+       once the viewport is scrolled programmatically. */
+    touch-action: pan-y;
+    -webkit-overflow-scrolling: touch;
   }
 
   /* Layout */

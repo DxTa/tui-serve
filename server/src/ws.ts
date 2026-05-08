@@ -36,12 +36,18 @@ const logger = {
   },
 };
 
+const OUTPUT_FLUSH_MS = 4;
+const OUTPUT_MAX_BUFFER_BYTES = 16 * 1024;
+
 interface ClientState {
   ws: WebSocket;
   sessionId: string | null;
   pty: IPtyProcess | null;
   lastActivity: number;
   authenticated: boolean;
+  outputBuffer: Buffer[];
+  outputBufferBytes: number;
+  outputFlushTimer: ReturnType<typeof setTimeout> | null;
 }
 
 const clients = new Map<WebSocket, ClientState>();
@@ -57,6 +63,9 @@ export function setupWebSocket(server: FastifyInstance): WebSocketServer {
       pty: null,
       lastActivity: Date.now(),
       authenticated: false,
+      outputBuffer: [],
+      outputBufferBytes: 0,
+      outputFlushTimer: null,
     };
     clients.set(ws, client);
 
@@ -231,15 +240,28 @@ function handleAttach(ws: WebSocket, client: ClientState, sessionId: string, req
     sendControl(ws, { v: PROTOCOL_VERSION, type: 'snapshot', sessionId, data: snapshot });
   }
 
-  // Forward PTY output to client as binary frames
+  // Forward PTY output to client as binary frames.
+  // Coalesce tiny PTY chunks (common while typing fast) into short batches to
+  // reduce WS frame overhead and client write pressure without visible latency.
   pty.onData((data: string) => {
-    if (ws.readyState === ws.OPEN) {
-      const frame = buildBinaryFrame(sessionId, Buffer.from(data, 'utf-8'));
-      ws.send(frame);
+    if (ws.readyState !== ws.OPEN) return;
+
+    const chunk = Buffer.from(data, 'utf-8');
+    client.outputBuffer.push(chunk);
+    client.outputBufferBytes += chunk.length;
+
+    if (client.outputBufferBytes >= OUTPUT_MAX_BUFFER_BYTES) {
+      flushClientOutput(client);
+      return;
+    }
+
+    if (!client.outputFlushTimer) {
+      client.outputFlushTimer = setTimeout(() => flushClientOutput(client), OUTPUT_FLUSH_MS);
     }
   });
 
   pty.onExit((code) => {
+    flushClientOutput(client);
     logger.info('pty.exited', { sessionId, code });
     sendControl(ws, {
       v: PROTOCOL_VERSION,
@@ -336,6 +358,7 @@ function handleRestart(ws: WebSocket, client: ClientState, sessionId: string, re
 }
 
 function cleanupPty(client: ClientState): void {
+  flushClientOutput(client);
   if (client.pty) {
     try { client.pty.kill(); } catch {}
     if (client.sessionId) {
@@ -360,6 +383,25 @@ function cleanupClient(client: ClientState): void {
       broadcastSessionUpdate(client.sessionId);
     }
   }
+}
+
+function flushClientOutput(client: ClientState): void {
+  if (client.outputFlushTimer) {
+    clearTimeout(client.outputFlushTimer);
+    client.outputFlushTimer = null;
+  }
+  if (!client.sessionId || client.outputBufferBytes === 0 || client.ws.readyState !== client.ws.OPEN) {
+    client.outputBuffer = [];
+    client.outputBufferBytes = 0;
+    return;
+  }
+
+  const payload = client.outputBuffer.length === 1
+    ? client.outputBuffer[0]
+    : Buffer.concat(client.outputBuffer, client.outputBufferBytes);
+  client.outputBuffer = [];
+  client.outputBufferBytes = 0;
+  client.ws.send(buildBinaryFrame(client.sessionId, payload));
 }
 
 function sendControl(ws: WebSocket, msg: ServerMessage): void {

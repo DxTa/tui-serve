@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
+import { CanvasAddon } from '@xterm/addon-canvas';
+import { WebglAddon } from '@xterm/addon-webgl';
 import { TerminalSocket } from '../lib/terminalSocket';
 import { api } from '../lib/apiClient';
 import { db } from '../lib/db';
@@ -121,6 +123,28 @@ export default function TerminalView({ session, host, onBack, onSessionUpdate }:
     term.loadAddon(fitAddon);
     term.open(termRef.current);
 
+    // Renderer chain: WebGL (fastest) → Canvas → DOM fallback.
+    // DOM renderer creates/manipulates many <span> nodes per frame; Canvas/WebGL
+    // paint directly and are much better for rapid typing/output.
+    try {
+      const webglAddon = new WebglAddon();
+      webglAddon.onContextLoss(() => {
+        webglAddon.dispose();
+        try {
+          term.loadAddon(new CanvasAddon());
+        } catch (canvasError) {
+          console.warn('Canvas renderer unavailable after WebGL context loss:', canvasError);
+        }
+      });
+      term.loadAddon(webglAddon);
+    } catch (webglError) {
+      try {
+        term.loadAddon(new CanvasAddon());
+      } catch (canvasError) {
+        console.warn('WebGL and Canvas renderers unavailable, falling back to DOM renderer:', webglError, canvasError);
+      }
+    }
+
     // Capture Ctrl+W/T/N before the browser closes tabs/opens windows.
     // xterm's custom key handler runs before xterm processes the key.
     // Returning true tells xterm to process the key AND call preventDefault()
@@ -159,13 +183,46 @@ export default function TerminalView({ session, host, onBack, onSessionUpdate }:
       setConnectionState(state);
     };
 
+    // Buffer terminal writes and flush once per animation frame.
+    // Without this, every small WebSocket message triggers a separate
+    // term.write() → parser → renderer cycle.  Batching collapses many
+    // tiny writes (escape sequences, echo chunks) into a single render,
+    // dramatically reducing jank when typing fast.
+    let writeBuffer: Uint8Array[] = [];
+    let writeRafId: number | null = null;
+    const flushWrites = () => {
+      writeRafId = null;
+      if (writeBuffer.length === 0) return;
+      // Concat all chunks into a single write so xterm parses and
+      // renders in one pass.
+      const totalLen = writeBuffer.reduce((s, b) => s + b.length, 0);
+      const merged = new Uint8Array(totalLen);
+      let offset = 0;
+      for (const chunk of writeBuffer) {
+        merged.set(chunk, offset);
+        offset += chunk.length;
+      }
+      writeBuffer = [];
+      term.write(merged);
+    };
+    const scheduleWrite = (data: Uint8Array) => {
+      writeBuffer.push(data);
+      if (!writeRafId) {
+        writeRafId = requestAnimationFrame(flushWrites);
+      }
+    };
+
     socket.onOutput = (sessionId, data) => {
       if (sessionId !== currentSessionIdRef.current) return;
-      term.write(data);
+      scheduleWrite(data);
     };
 
     socket.onSnapshot = (sessionId, data) => {
       if (sessionId !== currentSessionIdRef.current) return;
+      // Flush any buffered writes first, then apply snapshot
+      if (writeRafId) cancelAnimationFrame(writeRafId);
+      writeBuffer = [];
+      writeRafId = null;
       term.clear();
       term.write(data);
     };
@@ -173,7 +230,11 @@ export default function TerminalView({ session, host, onBack, onSessionUpdate }:
     socket.onStatus = (sessionId, status, _pid, exitCode) => {
       if (sessionId !== currentSessionIdRef.current) return;
       const newStatus = status as SessionStatus;
+      // Status changes are rare during active typing. Only propagate to
+      // React state when the status ACTUALLY changes to avoid triggering
+      // unnecessary re-renders of the component tree.
       setCurrentSession((prev) => {
+        if (prev.status === newStatus && prev.exitCode === exitCode) return prev;
         const updated = { ...prev, status: newStatus, exitCode };
         onSessionUpdate(updated);
         return updated;
@@ -184,8 +245,11 @@ export default function TerminalView({ session, host, onBack, onSessionUpdate }:
     };
 
     socket.onSessionUpdate = (updated) => {
-      setCurrentSession((prev) => ({ ...prev, ...updated }));
-      onSessionUpdate({ ...currentSession, ...updated } as Session);
+      setCurrentSession((prev) => {
+        const merged = { ...prev, ...updated };
+        onSessionUpdate(merged);
+        return merged;
+      });
     };
 
     socket.onKilled = () => {
@@ -240,6 +304,7 @@ export default function TerminalView({ session, host, onBack, onSessionUpdate }:
 
     return () => {
       inputData.dispose();
+      if (writeRafId) cancelAnimationFrame(writeRafId);
       window.removeEventListener('resize', handleResize);
       if (window.visualViewport) {
         window.visualViewport.removeEventListener('resize', handleResize);
@@ -255,6 +320,72 @@ export default function TerminalView({ session, host, onBack, onSessionUpdate }:
       term.dispose();
     };
   }, [fitAndResize, scheduleFitAndResize, hostUrl]);
+
+  // Touch-to-scroll for mobile: xterm.js renders a canvas (.xterm-screen)
+  // on top of the scrollable viewport (.xterm-viewport). Touch events hit
+  // the screen layer first and are consumed for selection, so the viewport
+  // never receives native touch-scroll events. This effect bridges the gap
+  // by converting vertical touch swipes on the terminal container into
+  // xterm scrollLines() calls that update both the viewport and canvas.
+  useEffect(() => {
+    const container = termRef.current;
+    if (!container) return;
+
+    let touchStartY = 0;
+    let lastTouchY = 0;
+    let isScrolling = false;
+    // Threshold (px) to distinguish a scroll from a tap
+    const SCROLL_THRESHOLD = 8;
+
+    const onTouchStart = (e: TouchEvent) => {
+      lastTouchY = e.touches[0].clientY;
+      touchStartY = lastTouchY;
+      isScrolling = false;
+    };
+
+    const onTouchMove = (e: TouchEvent) => {
+      const touchY = e.touches[0].clientY;
+      const deltaY = lastTouchY - touchY;
+      lastTouchY = touchY;
+
+      // Only activate scroll mode once the finger has moved past the threshold
+      if (!isScrolling && Math.abs(touchY - touchStartY) > SCROLL_THRESHOLD) {
+        isScrolling = true;
+      }
+
+      if (!isScrolling || deltaY === 0) return;
+
+      const term = terminalRef.current;
+      if (!term) return;
+
+      // Use xterm's scrollLines to keep the internal buffer and canvas in sync.
+      // A single touch-move event typically moves 1–3 px; scroll by 1 line per
+      // event, and xterm will redraw the visible portion accordingly.
+      const lines = deltaY > 0 ? 1 : -1;
+      term.scrollLines(lines);
+
+      // Prevent the page from also scrolling while the user is scrolling
+      // the terminal. Without this the browser would try to scroll the
+      // <html> element (which has overflow:hidden anyway), or on iOS the
+      // entire viewport rubber-bands.
+      e.preventDefault();
+    };
+
+    const onTouchEnd = () => {
+      isScrolling = false;
+    };
+
+    // passive:false is required on touchmove so we can call preventDefault()
+    container.addEventListener('touchstart', onTouchStart, { passive: true });
+    container.addEventListener('touchmove', onTouchMove, { passive: false });
+    container.addEventListener('touchend', onTouchEnd, { passive: true });
+
+    return () => {
+      container.removeEventListener('touchstart', onTouchStart);
+      container.removeEventListener('touchmove', onTouchMove);
+      container.removeEventListener('touchend', onTouchEnd);
+    };
+  }, []);
 
   // Keep latest session id available to stable terminal callbacks.
   useEffect(() => {

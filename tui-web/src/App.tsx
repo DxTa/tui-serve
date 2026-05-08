@@ -70,12 +70,16 @@ export default function App() {
     if (authed) loadSessions();
   }, [authed, loadSessions]);
 
-  // Auto-refresh sessions every 5 seconds
+  // Auto-refresh sessions every 5 seconds on the dashboard only.
+  // Terminal view has a hot xterm render/input path; polling here caused
+  // visible jank every 5s by fetching sessions, syncing Dexie, and updating
+  // selectedSession while the user was typing. Terminal state is kept fresh via
+  // WebSocket events instead.
   useEffect(() => {
-    if (!authed) return;
+    if (!authed || currentSessionId) return;
     const interval = setInterval(loadSessions, 5000);
     return () => clearInterval(interval);
-  }, [authed, loadSessions]);
+  }, [authed, currentSessionId, loadSessions]);
 
   // On initial load, if we have a session ID in the URL, fetch that session
   useEffect(() => {
@@ -102,6 +106,13 @@ export default function App() {
       setSelectedHost(null);
     }
   }, [currentSessionId]);
+
+  // Stable callback to update session state without re-creating
+  // the function on every render. Prevents TerminalView re-renders
+  // caused by a new onSessionUpdate reference on each App render.
+  const handleSessionUpdate = useCallback((updated: Session) => {
+    setSelectedSession(updated);
+  }, []);
 
   // Loading probe
   if (checkingAuth) {
@@ -174,9 +185,7 @@ export default function App() {
         session={selectedSession}
         host={selectedHost}
         onBack={handleBack}
-        onSessionUpdate={(updated) => {
-          setSelectedSession(updated);
-        }}
+        onSessionUpdate={handleSessionUpdate}
       />
     );
   }

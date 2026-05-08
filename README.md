@@ -2,7 +2,7 @@
 
 Run and resume coding-agent terminals from any browser.
 
-![TUI Serve screenshot](docs/assets/tui-serve-screenshot.png)
+![TUI Serve screenshot](docs/assets/tui-serve-session.png)
 
 TUI Serve is a lightweight web UI for long-running coding-agent sessions on Linux, WSL, and macOS. It gives you browser-based terminal access backed by tmux, so sessions survive disconnects, browser reloads, and daemon restarts.
 

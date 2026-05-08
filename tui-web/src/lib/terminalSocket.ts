@@ -52,12 +52,27 @@ export class TerminalSocket {
   }
 
   connect(hostUrl: string, token?: string): void {
-    this.hostUrl = hostUrl;
+    // Defensive normalization: a "localhost" backend URL from bundled config
+    // means "same origin as the loaded app", not the browser device itself.
+    // This matters for phones/tablets accessing the server via LAN/Tailscale.
+    const normalizedHostUrl = (() => {
+      try {
+        const url = new URL(hostUrl);
+        if (url.hostname === 'localhost' || url.hostname === '127.0.0.1' || url.hostname === '::1') {
+          return window.location.origin;
+        }
+      } catch {
+        // Keep original value if parsing fails; WebSocket will surface error.
+      }
+      return hostUrl;
+    })();
+
+    this.hostUrl = normalizedHostUrl;
     this.token = token || getAuthToken() || '';
 
-    const wsUrl = hostUrl
-      .replace(/^http/, 'ws')
-      .replace(/^https/, 'wss');
+    const wsUrl = normalizedHostUrl
+      .replace(/^https/, 'wss')
+      .replace(/^http/, 'ws');
 
     const url = `${wsUrl}/ws?token=${encodeURIComponent(this.token)}`;
 

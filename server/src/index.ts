@@ -1,7 +1,7 @@
 // Main entry point — Fastify server + WebSocket + REST API
 
 import Fastify from 'fastify';
-import { existsSync, mkdirSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync } from 'fs';
 import { resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { execSync } from 'child_process';
@@ -199,14 +199,39 @@ if (existsSync(webDistPath)) {
         if (
           filePath.endsWith('index.html') ||
           filePath.endsWith('sw.js') ||
+          filePath.endsWith('registerSW.js') ||
           filePath.endsWith('manifest.webmanifest') ||
           /workbox-.*\.js$/.test(filePath)
         ) {
           res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
           res.setHeader('Pragma', 'no-cache');
           res.setHeader('Expires', '0');
+          return;
+        }
+
+        if (/[/\\]assets[/\\].+\.(?:js|css|woff2?|png|jpe?g|svg|webp)$/.test(filePath)) {
+          res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
         }
       },
+    });
+
+    server.setNotFoundHandler((request, reply) => {
+      if (request.method === 'GET' && request.url.startsWith('/assets/')) {
+        reply.code(404).type('text/plain; charset=utf-8').send('Static asset not found');
+        return;
+      }
+
+      if (
+        request.method === 'GET' &&
+        !request.url.startsWith('/api/') &&
+        !request.url.startsWith('/ws') &&
+        !/\.[a-z0-9]+(?:[?#].*)?$/i.test(request.url)
+      ) {
+        reply.type('text/html; charset=utf-8').send(readFileSync(resolve(webDistPath, 'index.html'), 'utf-8'));
+        return;
+      }
+
+      reply.code(404).send({ error: 'NOT_FOUND', message: `Route ${request.method}:${request.url} not found` });
     });
   } catch {
     logger.warn('@fastify/static not available, static serving disabled');

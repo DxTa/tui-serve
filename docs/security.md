@@ -45,22 +45,11 @@ On plain HTTP, an attacker on the network path can read or modify:
 - `AUTH_TOKEN`
 - terminal input/output
 - WebSocket frames
-- future MFA codes or session tokens
+- future MFA codes or session tokens maybe????
 
 `AUTH_TOKEN` protects application access, not transport confidentiality. Use localhost tunnels, Tailscale/WireGuard, or HTTPS for transport security.
 
 ## Browser token storage
 
 The browser stores the token locally for convenience. This can be read by malicious browser extensions or successful XSS. Security headers reduce XSS blast radius, but do not protect against compromised browsers or HTTP sniffing.
-
-## MFA status
-
-App-native 2FA is not enabled yet.
-
-Recommended strong-auth options today:
-
-- SSH tunnel + local bind
-- Tailscale/WireGuard ACLs
-- HTTPS reverse proxy with OIDC/Authelia/IdP MFA
-
-Future app-native TOTP should be used only with trusted transport or HTTPS. TOTP over plain HTTP does not stop network interception.
+---> Not so good

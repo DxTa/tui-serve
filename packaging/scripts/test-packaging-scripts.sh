@@ -86,4 +86,71 @@ assert_contains "$USER_SERVICE" 'WorkingDirectory=%h/.local/share/remote-agent-t
 assert_contains "$USER_SERVICE" 'REMOTE_AGENT_TUI_DATA_DIR=%h/.local/share/remote-agent-tui/data' \
   "user service stores data in user-local dir"
 
+# ── macOS build script assertions ──
+assert_contains "$BUILD_MACOS" 'MACOSX_DEPLOYMENT_TARGET' \
+  "macOS build sets deployment target"
+assert_contains "$BUILD_MACOS" 'codesign' \
+  "macOS build ad-hoc signs native binaries"
+assert_contains "$BUILD_MACOS" 'remote-agent-tui.sh' \
+  "macOS build includes launcher wrapper"
+assert_contains "$BUILD_MACOS" 'doctor-macos' \
+  "macOS build includes doctor script"
+assert_contains "$BUILD_MACOS" 'shasum' \
+  "macOS build generates SHA256 checksums"
+assert_contains "$BUILD_MACOS" 'audit_minos' \
+  "macOS build runs ABI audit"
+
+# ── macOS installer assertions ──
+MACOS_INSTALL="$PROJECT_DIR/packaging/macos/install-macos.sh"
+assert_contains "$MACOS_INSTALL" 'xattr -cr' \
+  "macOS installer strips quarantine"
+assert_contains "$MACOS_INSTALL" 'tmux' \
+  "macOS installer checks tmux prerequisite"
+assert_contains "$MACOS_INSTALL" 'remote-agent-tui.sh' \
+  "macOS installer installs launcher wrapper"
+assert_contains "$MACOS_INSTALL" 'xattr -cr' \
+  "macOS installer strips quarantine"
+assert_contains "$MACOS_INSTALL" '/../..' \
+  "macOS installer resolves bundle root via deploy/scripts path"
+
+# ── macOS plist assertions ──
+PLIST="$PROJECT_DIR/packaging/macos/com.remote-agent-tui.plist"
+assert_contains "$PLIST" 'remote-agent-tui.sh' \
+  "plist invokes launcher wrapper"
+assert_contains "$PLIST" 'KeepAlive' \
+  "plist has KeepAlive key"
+
+# ── macOS doctor assertions ──
+MACOS_DOCTOR="$PROJECT_DIR/packaging/macos/doctor-macos.sh"
+assert_contains "$MACOS_DOCTOR" 'node-pty' \
+  "macOS doctor checks node-pty loadability"
+assert_contains "$MACOS_DOCTOR" 'launchctl' \
+  "macOS doctor checks launchd service status"
+assert_contains "$MACOS_DOCTOR" 'xattr' \
+  "macOS doctor checks quarantine attributes"
+assert_contains "$MACOS_DOCTOR" 'lsof' \
+  "macOS doctor checks port availability"
+assert_contains "$MACOS_DOCTOR" 'AUTH_TOKEN' \
+  "macOS doctor checks auth token from env file"
+assert_contains "$MACOS_DOCTOR" 'sw_vers' \
+  "macOS doctor checks macOS version"
+
+# ── macOS launcher wrapper assertions ──
+LAUNCHER="$PROJECT_DIR/packaging/macos/remote-agent-tui.sh"
+assert_contains "$LAUNCHER" '. "${CONFIG_DIR}/env"' \
+  "launcher wrapper sources env file"
+assert_contains "$LAUNCHER" 'set -a' \
+  "launcher wrapper exports env variables"
+assert_contains "$LAUNCHER" 'exec' \
+  "launcher wrapper execs into node"
+assert_contains "$LAUNCHER" 'NODE_BIN' \
+  "launcher wrapper checks node binary exists"
+
+# ── macOS uninstaller assertions ──
+MACOS_UNINSTALL="$PROJECT_DIR/packaging/macos/uninstall-macos.sh"
+assert_contains "$MACOS_UNINSTALL" 'launchctl unload' \
+  "macOS uninstaller stops launchd service"
+assert_contains "$MACOS_UNINSTALL" 'rm -rf' \
+  "macOS uninstaller removes application files"
+
 echo "Packaging script checks passed."

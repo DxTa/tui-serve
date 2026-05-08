@@ -202,10 +202,9 @@ function handleControlMessage(ws: WebSocket, client: ClientState, msg: ClientMes
 }
 
 function handleAttach(ws: WebSocket, client: ClientState, sessionId: string, requestId?: string): void {
-  // Clean up any existing attachment
-  if (client.pty) {
-    cleanupPty(client);
-  }
+  // Release any existing attachment before attaching this socket to another session.
+  // Without decrementing here, session switches can leave stale viewer counts.
+  releaseAttachment(client, 'reattach');
 
   const session = sessionManager.getSession(sessionId);
   if (!session) {
@@ -261,6 +260,9 @@ function handleAttach(ws: WebSocket, client: ClientState, sessionId: string, req
   });
 
   pty.onExit((code) => {
+    // Ignore stale exit callbacks from an old PTY after this socket reattached.
+    if (client.pty !== pty || client.sessionId !== sessionId) return;
+
     flushClientOutput(client);
     logger.info('pty.exited', { sessionId, code });
     sendControl(ws, {
@@ -271,7 +273,7 @@ function handleAttach(ws: WebSocket, client: ClientState, sessionId: string, req
       pid: null,
       exitCode: code,
     });
-    cleanupPty(client);
+    releaseAttachment(client, 'pty_exit', sessionId);
   });
 
   // Update attached clients count
@@ -303,17 +305,8 @@ function handleResize(client: ClientState, sessionId: string, cols: number, rows
 }
 
 function handleDetach(ws: WebSocket, client: ClientState, sessionId: string, requestId?: string): void {
-  cleanupPty(client);
+  releaseAttachment(client, 'detach', sessionId);
   sendControl(ws, { v: PROTOCOL_VERSION, type: 'detach_ack', sessionId, requestId });
-
-  const session = sessionManager.getSession(sessionId);
-  if (session) {
-    const newCount = Math.max(0, session.attachedClients - 1);
-    const store = getStore();
-    store.updateSession(sessionId, { attachedClients: newCount });
-    broadcastSessionUpdate(sessionId);
-    logEvent(sessionId, 'detached', { clientCount: newCount });
-  }
 
   logger.info('ws.client.detached', { sessionId });
 }
@@ -327,10 +320,10 @@ function handleKill(ws: WebSocket, client: ClientState, sessionId: string, confi
 
   sendControl(ws, { v: PROTOCOL_VERSION, type: 'kill_ack', sessionId, requestId });
 
-  // Clean up the client's PTY if they were attached to this session
-  if (client.sessionId === sessionId) {
-    cleanupPty(client);
-  }
+  // Clean up the client's attachment if they were attached to this session.
+  // The session may already be removed from the store, so this mainly clears
+  // per-socket state and unregisters/kills the PTY bridge idempotently.
+  releaseAttachment(client, 'kill', sessionId);
 
   broadcastSessionUpdate(sessionId);
   logger.info('ws.session.killed', { sessionId });
@@ -369,20 +362,28 @@ function cleanupPty(client: ClientState): void {
     }
     client.pty = null;
   }
+}
+
+function releaseAttachment(client: ClientState, reason: string, expectedSessionId?: string): void {
+  const sessionId = client.sessionId;
+  if (!sessionId) return;
+  if (expectedSessionId && sessionId !== expectedSessionId) return;
+
+  cleanupPty(client);
   client.sessionId = null;
+
+  const session = sessionManager.getSession(sessionId);
+  if (!session) return;
+
+  const newCount = Math.max(0, session.attachedClients - 1);
+  const store = getStore();
+  store.updateSession(sessionId, { attachedClients: newCount });
+  broadcastSessionUpdate(sessionId);
+  logEvent(sessionId, 'detached', { clientCount: newCount, reason });
 }
 
 function cleanupClient(client: ClientState): void {
-  cleanupPty(client);
-  if (client.sessionId) {
-    const session = sessionManager.getSession(client.sessionId);
-    if (session) {
-      const newCount = Math.max(0, session.attachedClients - 1);
-      const store = getStore();
-      store.updateSession(client.sessionId, { attachedClients: newCount });
-      broadcastSessionUpdate(client.sessionId);
-    }
-  }
+  releaseAttachment(client, 'close');
 }
 
 function flushClientOutput(client: ClientState): void {

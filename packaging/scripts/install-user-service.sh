@@ -152,32 +152,58 @@ if [ -d "$PACKAGED_PREFIX/server/dist" ] && [ -d "$PACKAGED_PREFIX/server/node_m
   cp -a "$PACKAGED_PREFIX/server/node_modules" "$PREFIX/server/"
   cp -a "$PACKAGED_WEB_DIR/." "$PREFIX/web/"
 elif [ -n "$PROJECT_DIR" ]; then
+  echo "Installing workspace dependencies..."
+  ( cd "$PROJECT_DIR" && npm ci 2>/dev/null || npm install )
+
+  echo "Building shared package..."
+  ( cd "$PROJECT_DIR/packages/shared" && npm run build )
+
   echo "Building frontend..."
-  (
-    cd "$PROJECT_DIR/tui-web"
-    npm ci --ignore-scripts 2>/dev/null || npm ci
-    npm run build
-  )
+  ( cd "$PROJECT_DIR/tui-web" && npm run build )
 
   echo "Building backend..."
-  (
-    cd "$PROJECT_DIR/server"
-    npm ci 2>/dev/null || npm install
-    npm run build
-    npm prune --omit=dev 2>/dev/null || true
-  )
+  ( cd "$PROJECT_DIR/server" && npm run build )
 
-  cp -a "$PROJECT_DIR/server/dist" "$PREFIX/server/"
+  echo "Pruning devDependencies..."
+  ( cd "$PROJECT_DIR" && npm prune --omit=dev 2>/dev/null || true )
+
+  mkdir -p "$PREFIX/server/dist"
+  cp -R "$PROJECT_DIR/server/dist/"* "$PREFIX/server/dist/"
   cp "$PROJECT_DIR/server/package.json" "$PREFIX/server/"
   cp "$PROJECT_DIR/server/package-lock.json" "$PREFIX/server/" 2>/dev/null || true
-  cp -a "$PROJECT_DIR/server/node_modules" "$PREFIX/server/"
+
+  # Copy root node_modules (hoisted production deps) then overlay server's
+  cp -a "$PROJECT_DIR/node_modules/." "$PREFIX/server/node_modules/"
+  if [ -d "$PROJECT_DIR/server/node_modules" ]; then
+    cp -a "$PROJECT_DIR/server/node_modules/." "$PREFIX/server/node_modules/"
+  fi
+
+  # Resolve workspace symlinks that would be broken in the install directory
+  if [ -L "$PREFIX/server/node_modules/@remote-agent-tui/shared" ]; then
+    SHARED_TARGET="$(readlink -f "$PROJECT_DIR/node_modules/@remote-agent-tui/shared")"
+    rm "$PREFIX/server/node_modules/@remote-agent-tui/shared"
+    cp -a "$SHARED_TARGET" "$PREFIX/server/node_modules/@remote-agent-tui/shared"
+  fi
+  rm -f "$PREFIX/server/node_modules/remote-agent-tui-server"
+
   cp -a "$PROJECT_DIR/tui-web/dist/." "$PREFIX/web/"
 else
   echo "Could not find packaged files or source checkout." >&2
   exit 1
 fi
 
-onboard_config
+default_roots="${REMOTE_AGENT_TUI_ALLOWED_ROOTS:-$(default_allowed_roots)}"
+ALLOWED_ROOTS="$default_roots"
+
+if [ -f "$CONFIG_DIR/default-config.json" ] || [ -f "$CONFIG_DIR/env" ]; then
+  echo "Existing Remote Agent TUI configuration found."
+  [ -f "$CONFIG_DIR/default-config.json" ] && echo "  Config: $CONFIG_DIR/default-config.json"
+  [ -f "$CONFIG_DIR/env" ] && echo "  Env: $CONFIG_DIR/env"
+  echo "Using existing configuration paths; skipping interactive setup."
+else
+  onboard_config
+fi
+
 ROOTS_JSON="$(roots_json_from_csv "$ALLOWED_ROOTS")"
 [ -n "$ROOTS_JSON" ] || ROOTS_JSON="\"$HOME\""
 
@@ -216,6 +242,41 @@ elif ! grep -q '^BIND_HOST=' "$CONFIG_DIR/env"; then
   printf '\nBIND_HOST=%s\n' "$BIND_HOST" >> "$CONFIG_DIR/env"
 fi
 
+# ── Ensure AUTH_TOKEN is set for network-reachable binds ──
+# If BIND_HOST is 0.0.0.0 or similar (network-reachable), AUTH_TOKEN must be
+# a strong random token (32+ chars). Without it, the server refuses to start.
+if [ -f "$CONFIG_DIR/env" ]; then
+  ENV_BIND_HOST="$(grep '^BIND_HOST=' "$CONFIG_DIR/env" | head -1 | cut -d= -f2- | xargs)"
+  ENV_AUTH_TOKEN="$(grep '^AUTH_TOKEN=' "$CONFIG_DIR/env" | head -1 | cut -d= -f2-)"
+
+  # Detect network-reachable bind (0.0.0.0, ::, *, or any non-loopback IP)
+  case "${ENV_BIND_HOST:-127.0.0.1}" in
+    0.0.0.0|::|\*|'')
+      NETWORK_BIND=true ;;
+    127.0.0.1|localhost|::1)
+      NETWORK_BIND=false ;;
+    127.*)
+      NETWORK_BIND=false ;;
+    *)
+      NETWORK_BIND=true ;;
+  esac
+
+  if [ "$NETWORK_BIND" = true ] && [ -z "$ENV_AUTH_TOKEN" ]; then
+    GENERATED_AUTH_TOKEN="$(generate_token)"
+    if grep -q '^AUTH_TOKEN=$' "$CONFIG_DIR/env" 2>/dev/null; then
+      # Replace empty AUTH_TOKEN= with generated token
+      tmp_env="$(mktemp)"
+      sed "s|^AUTH_TOKEN=.*|AUTH_TOKEN=${GENERATED_AUTH_TOKEN}|" "$CONFIG_DIR/env" > "$tmp_env"
+      cat "$tmp_env" > "$CONFIG_DIR/env"
+      rm -f "$tmp_env"
+    else
+      # AUTH_TOKEN line doesn't exist at all — append it
+      printf '\nAUTH_TOKEN=%s\n' "$GENERATED_AUTH_TOKEN" >> "$CONFIG_DIR/env"
+    fi
+    chmod 600 "$CONFIG_DIR/env"
+  fi
+fi
+
 if [ -f "$PACKAGED_USER_SERVICE" ]; then
   cp "$PACKAGED_USER_SERVICE" "$SYSTEMD_USER_DIR/$SERVICE_NAME"
 elif [ -n "$PROJECT_DIR" ] && [ -f "$PROJECT_DIR/packaging/systemd/remote-agent-tui-user.service" ]; then
@@ -225,16 +286,26 @@ else
   exit 1
 fi
 systemctl --user daemon-reload
-systemctl --user enable --now "$SERVICE_NAME"
+if systemctl --user is-active --quiet "$SERVICE_NAME"; then
+  systemctl --user restart "$SERVICE_NAME"
+else
+  systemctl --user enable --now "$SERVICE_NAME"
+fi
 
 echo ""
 echo "Remote Agent TUI user service installed."
 echo "URL: http://localhost:$PORT"
 if [ -n "$GENERATED_AUTH_TOKEN" ]; then
-  echo "Generated AUTH_TOKEN written to: $CONFIG_DIR/env"
-  echo "Token: $GENERATED_AUTH_TOKEN"
+  echo "AUTH_TOKEN: $GENERATED_AUTH_TOKEN"
+  echo "  written to: $CONFIG_DIR/env"
+  echo "  ⚠  Save this token — it is not stored anywhere else."
 fi
-echo "Bind host: $BIND_HOST"
+EFFECTIVE_BIND_HOST="$BIND_HOST"
+if [ -f "$CONFIG_DIR/env" ]; then
+  ENV_BIND_HOST_DISPLAY="$(grep '^BIND_HOST=' "$CONFIG_DIR/env" | head -1 | cut -d= -f2- | xargs || true)"
+  [ -n "$ENV_BIND_HOST_DISPLAY" ] && EFFECTIVE_BIND_HOST="$ENV_BIND_HOST_DISPLAY"
+fi
+echo "Bind host: $EFFECTIVE_BIND_HOST"
 echo "Status: systemctl --user status $SERVICE_NAME"
 echo "Logs: journalctl --user -u $SERVICE_NAME -f"
 echo "Config: $CONFIG_DIR/default-config.json"

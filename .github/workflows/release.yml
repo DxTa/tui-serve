@@ -11,7 +11,9 @@ permissions:
 jobs:
   # ── Build .deb for Linux amd64 ──────────────────────────────
   build-deb:
-    runs-on: ubuntu-latest
+    # Pin runner image; actual .deb build runs inside packaging/build-deb.sh's
+    # ubuntu:20.04 Docker container for glibc compatibility.
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -25,10 +27,8 @@ jobs:
             server/package-lock.json
             tui-web/package-lock.json
 
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y dpkg-dev fakeroot libsqlite3-dev
+      - name: Verify Docker is available
+        run: docker --version
 
       - name: Get version from tag
         id: version
@@ -37,7 +37,7 @@ jobs:
       - name: Build .deb package
         run: |
           chmod +x packaging/build-deb.sh
-          ./packaging/build-deb.sh ${{ steps.version.outputs.VERSION }} amd64
+          ./packaging/build-deb.sh --docker ${{ steps.version.outputs.VERSION }} amd64
         env:
           NODE_VERSION: '22.15.0'
 
@@ -49,46 +49,57 @@ jobs:
           if-no-files-found: error
 
   # ── Build macOS arm64 bundle ─────────────────────────────────
-  build-macos:
-    runs-on: macos-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Node.js 22
-        uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-          cache: 'npm'
-          cache-dependency-path: |
-            server/package-lock.json
-            tui-web/package-lock.json
-
-      - name: Install tmux
-        run: brew install tmux
-
-      - name: Get version from tag
-        id: version
-        run: echo "VERSION=${GITHUB_REF_NAME#v}" >> $GITHUB_OUTPUT
-
-      - name: Build macOS bundle
-        run: |
-          chmod +x packaging/build-macos.sh
-          ./packaging/build-macos.sh ${{ steps.version.outputs.VERSION }}
-        env:
-          NODE_VERSION: '22.15.0'
-
-      - name: Upload macOS artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: remote-agent-tui-${{ steps.version.outputs.VERSION }}-macos-arm64
-          path: packaging/dist/*.tar.gz
-          if-no-files-found: error
+  # build-macos:
+  #   runs-on: macos-14  # Apple Silicon (M1)
+  #   env:
+  #     MACOSX_DEPLOYMENT_TARGET: '12.0'
+  #   steps:
+  #     - name: Checkout
+  #       uses: actions/checkout@v4
+  #
+  #     - name: Setup Node.js 22
+  #       uses: actions/setup-node@v4
+  #       with:
+  #         node-version: '22'
+  #         cache: 'npm'
+  #         cache-dependency-path: |
+  #           package-lock.json
+  #           server/package-lock.json
+  #           tui-web/package-lock.json
+  #
+  #     - name: Install tmux
+  #       run: brew install tmux
+  #
+  #     - name: Get version from tag
+  #       id: version
+  #       run: echo "VERSION=${GITHUB_REF_NAME#v}" >> $GITHUB_OUTPUT
+  #
+  #     - name: Build macOS bundle
+  #       run: |
+  #         chmod +x packaging/build-macos.sh
+  #         ./packaging/build-macos.sh ${{ steps.version.outputs.VERSION }}
+  #       env:
+  #         NODE_VERSION: '22.15.0'
+  #
+  #     - name: Generate SHA256 checksums
+  #       run: |
+  #         cd packaging/dist
+  #         shasum -a 256 *.tar.gz > checksums-macos-arm64.txt
+  #         cat checksums-macos-arm64.txt
+  #
+  #     - name: Upload macOS artifact
+  #       uses: actions/upload-artifact@v4
+  #       with:
+  #         name: remote-agent-tui-${{ steps.version.outputs.VERSION }}-macos-arm64
+  #         path: |
+  #           packaging/dist/*.tar.gz
+  #           packaging/dist/checksums-*.txt
+  #         if-no-files-found: error
 
   # ── Create GitHub Release ─────────────────────────────────────
   release:
-    needs: [build-deb, build-macos]
-    runs-on: ubuntu-latest
+    needs: [build-deb]
+    runs-on: ubuntu-24.04
     steps:
       - name: Get version from tag
         id: version
@@ -100,11 +111,11 @@ jobs:
           name: remote-agent-tui-${{ steps.version.outputs.VERSION }}-amd64-deb
           path: release-artifacts/
 
-      - name: Download macOS artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: remote-agent-tui-${{ steps.version.outputs.VERSION }}-macos-arm64
-          path: release-artifacts/
+      # - name: Download macOS artifact
+      #   uses: actions/download-artifact@v4
+      #   with:
+      #     name: remote-agent-tui-${{ steps.version.outputs.VERSION }}-macos-arm64
+      #     path: release-artifacts/
 
       - name: List release artifacts
         run: ls -lh release-artifacts/
@@ -144,6 +155,16 @@ jobs:
             cd remote-agent-tui-*/
             ./deploy/scripts/install-macos.sh
             ```
+
+            **Note:** macOS may quarantine the downloaded archive. If you see "cannot be opened because it is from an unidentified developer", run:
+            ```bash
+            xattr -cr /usr/local/opt/remote-agent-tui
+            ```
+            The installer handles this automatically, but you may need it if you run the binary directly.
+
+            ### Checksums
+
+            See `checksums-*.txt` files in the release assets for SHA256 checksums.
 
             ### What's Changed
 

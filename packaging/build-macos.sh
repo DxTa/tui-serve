@@ -20,6 +20,11 @@
 
 set -euo pipefail
 
+# ── macOS deployment target ──
+# Ensures native modules (node-pty) target macOS 12+ (Monterey).
+# All Apple Silicon Macs run macOS 12+, so this is a safe minimum.
+export MACOSX_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-12.0}"
+
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 VERSION="${1:-}"
@@ -55,6 +60,7 @@ NODE_CACHE="${BUILD_DIR}/node-cache"
 echo "╔══════════════════════════════════════════════════════════╗"
 echo "║  Building ${BUNDLE_NAME}.tar.gz                          "
 echo "║  Bundled Node.js: v${NODE_VERSION} (darwin-${NODE_ARCH})  "
+echo "║  Deployment target: macOS ${MACOSX_DEPLOYMENT_TARGET}    "
 echo "╚══════════════════════════════════════════════════════════╝"
 echo ""
 echo "Project dir:  $PROJECT_DIR"
@@ -89,6 +95,13 @@ tar -xzf "$NODE_TARBALL_PATH" -C "$NODE_EXTRACT" \
 NODE_BIN_SIZE=$(du -sh "${NODE_EXTRACT}/bin/node" | cut -f1)
 echo "    Node.js binary: ${NODE_BIN_SIZE} ✓"
 
+# ── Stage 0.5: Build shared package ──
+echo ">>> Building shared package..."
+cd "${PROJECT_DIR}/packages/shared"
+npm ci --ignore-scripts 2>/dev/null || npm ci
+npm run build
+echo "    Shared package built ✓"
+
 # ── Stage 1: Build frontend ──
 echo ">>> Building frontend..."
 cd "${PROJECT_DIR}/tui-web"
@@ -99,6 +112,10 @@ echo "    Frontend built ✓"
 # ── Stage 2: Build backend ──
 echo ">>> Building backend..."
 cd "${PROJECT_DIR}/server"
+
+# Clean stale artifacts (e.g., old better-sqlite3 db.* from removed dependency)
+rm -f dist/db.js dist/db.d.ts dist/db.js.map
+
 npm ci 2>/dev/null || npm install
 npm run build
 echo "    Backend built ✓"
@@ -128,7 +145,7 @@ mkdir -p "${BUNDLE_DIR}/server/node_modules"
 cp -R "${PROJECT_DIR}/server/dist/"* "${BUNDLE_DIR}/server/dist/"
 cp "${PROJECT_DIR}/server/package.json" "${BUNDLE_DIR}/server/"
 cp "${PROJECT_DIR}/server/package-lock.json" "${BUNDLE_DIR}/server/"
-cp -a "${PROJECT_DIR}/server/node_modules/." "${BUNDLE_DIR}/server/node_modules/"
+cp -aL "${PROJECT_DIR}/server/node_modules/." "${BUNDLE_DIR}/server/node_modules/" 2>/dev/null || cp -a "${PROJECT_DIR}/server/node_modules/." "${BUNDLE_DIR}/server/node_modules/"
 cp "${PROJECT_DIR}/server/default-config.json" "${BUNDLE_DIR}/server/"
 
 # -- Frontend --
@@ -144,8 +161,17 @@ cp "${PROJECT_DIR}/packaging/macos/install-macos.sh" \
    "${BUNDLE_DIR}/deploy/scripts/"
 cp "${PROJECT_DIR}/packaging/macos/uninstall-macos.sh" \
    "${BUNDLE_DIR}/deploy/scripts/"
+cp "${PROJECT_DIR}/packaging/macos/doctor-macos.sh" \
+   "${BUNDLE_DIR}/deploy/scripts/"
 chmod +x "${BUNDLE_DIR}/deploy/scripts/install-macos.sh"
 chmod +x "${BUNDLE_DIR}/deploy/scripts/uninstall-macos.sh"
+chmod +x "${BUNDLE_DIR}/deploy/scripts/doctor-macos.sh"
+
+# -- Launcher wrapper --
+mkdir -p "${BUNDLE_DIR}/bin"
+cp "${PROJECT_DIR}/packaging/macos/remote-agent-tui.sh" \
+   "${BUNDLE_DIR}/bin/remote-agent-tui.sh"
+chmod 755 "${BUNDLE_DIR}/bin/remote-agent-tui.sh"
 
 # -- Documentation --
 cp "${PROJECT_DIR}/README.md" "${BUNDLE_DIR}/"
@@ -173,7 +199,68 @@ fi
   "${BUNDLE_DIR}/node/bin/node" -e "import('fastify').then(() => console.log('fastify import ok'))"
 ) >/dev/null
 
+# Check shared package resolved (not a broken symlink)
+if [ -L "${BUNDLE_DIR}/server/node_modules/@remote-agent-tui/shared" ]; then
+  SHARED_TARGET="$(readlink "${BUNDLE_DIR}/server/node_modules/@remote-agent-tui/shared")"
+  if [ ! -e "${BUNDLE_DIR}/server/node_modules/@remote-agent-tui/shared/dist/index.js" ]; then
+    echo "❌ Shared package symlink target is broken: ${SHARED_TARGET}" >&2
+    echo "   The bundle must contain resolved (not symlinked) shared package." >&2
+    exit 1
+  fi
+fi
+
+# Check for stale better-sqlite3 artifacts
+for STALE in db.js db.d.ts db.js.map; do
+  if [ -f "${SERVER_DIR}/dist/${STALE}" ]; then
+    echo "❌ Stale artifact found: ${SERVER_DIR}/dist/${STALE}" >&2
+    echo "   This should have been cleaned during build. Removing now." >&2
+    rm -f "${SERVER_DIR}/dist/${STALE}"
+  fi
+done
+
 echo "    Bundle layout sane ✓"
+
+# ── Stage 4.6: Ad-hoc code signing ──
+echo ">>> Ad-hoc signing native binaries..."
+# Ad-hoc signing provides integrity verification but does NOT bypass Gatekeeper.
+# The install script handles Gatekeeper with xattr -cr.
+CODESIGN_ERRORS=0
+if command -v codesign >/dev/null 2>&1; then
+  codesign -s - "${BUNDLE_DIR}/node/bin/node" 2>/dev/null || CODESIGN_ERRORS=$((CODESIGN_ERRORS + 1))
+  find "${BUNDLE_DIR}" -name '*.node' -exec codesign -s - {} \; 2>/dev/null || CODESIGN_ERRORS=$((CODESIGN_ERRORS + 1))
+  if [ "$CODESIGN_ERRORS" -eq 0 ]; then
+    echo "    Ad-hoc signatures applied ✓"
+  else
+    echo "    ⚠️  Some binaries could not be signed (non-fatal)"
+  fi
+else
+  echo "    ⚠️  codesign not available — skipping ad-hoc signing"
+fi
+
+# ── Stage 4.7: macOS ABI audit ──
+echo ">>> macOS deployment target audit..."
+MIN_MACOS_VERSION="${MACOSX_DEPLOYMENT_TARGET}"
+
+audit_minos() {
+  local file="$1" label="$2"
+  # vtool shows LC_BUILD_VERSION minos for macOS 10.14+
+  local minos
+  minos=$(vtool -show "$file" 2>/dev/null | awk '/minos/ {print $2"."$3}' | head -1 || true)
+  if [ -z "$minos" ]; then
+    # Fallback: otool -l for older Mach-O format
+    minos=$(otool -l "$file" 2>/dev/null | awk '/LC_VERSION_MIN_MACOSX/,+/' | awk '/version/ {print $2}' | head -1 || true)
+  fi
+  if [ -n "$minos" ]; then
+    echo "  ✅ $label: minimum macOS $minos (target: $MIN_MACOS_VERSION)"
+  else
+    echo "  ⚠️  $label: could not determine deployment target"
+  fi
+}
+
+audit_minos "${BUNDLE_DIR}/node/bin/node" "Node.js binary"
+find "${BUNDLE_DIR}" -name '*.node' -type f | while read -r nodefile; do
+  audit_minos "$nodefile" "$(basename "$nodefile")"
+done
 
 # ── Stage 5: Create .tar.gz ──
 echo ">>> Creating .tar.gz archive..."
@@ -187,6 +274,12 @@ tar -czf "${OUTPUT_DIR}/${BUNDLE_NAME}.tar.gz" "${BUNDLE_NAME}"
 ARCHIVE_PATH="${OUTPUT_DIR}/${BUNDLE_NAME}.tar.gz"
 ARCHIVE_SIZE=$(du -sh "$ARCHIVE_PATH" | cut -f1)
 
+# ── Generate SHA256 checksum ──
+echo ">>> Generating SHA256 checksum..."
+cd "${OUTPUT_DIR}"
+shasum -a 256 "${BUNDLE_NAME}.tar.gz" > "${BUNDLE_NAME}.tar.gz.sha256"
+echo "    Checksum written to ${BUNDLE_NAME}.tar.gz.sha256 ✓"
+
 echo ""
 echo "╔══════════════════════════════════════════════════════════╗"
 echo "║            Build Complete!                               ║"
@@ -194,6 +287,7 @@ echo "╠═══════════════════════�
 echo "║  Archive:  ${ARCHIVE_PATH}"
 echo "║  Size:     ${ARCHIVE_SIZE}"
 echo "║  Node.js:  v${NODE_VERSION} (darwin-${NODE_ARCH}, bundled)"
+echo "║  Target:   macOS ${MACOSX_DEPLOYMENT_TARGET}+ (${PKG_ARCH})"
 echo "╠══════════════════════════════════════════════════════════╣"
 echo "║                                                          ║"
 echo "║  Install on macOS:                                      ║"
@@ -205,4 +299,6 @@ echo "║  Open: http://localhost:5555                             ║"
 echo "║                                                          ║"
 echo "║  Uninstall:                                              ║"
 echo "║    ./deploy/scripts/uninstall-macos.sh                   ║"
+echo "║  Doctor:                                                 ║"
+echo "║    /usr/local/opt/remote-agent-tui/deploy/scripts/doctor-macos.sh ║"
 echo "╚══════════════════════════════════════════════════════════╝"

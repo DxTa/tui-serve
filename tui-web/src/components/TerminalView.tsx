@@ -85,6 +85,8 @@ export default function TerminalView({ session, host, onBack, onSessionUpdate }:
   useEffect(() => {
     if (!termRef.current) return;
 
+    let disposed = false;
+
     // Create terminal
     const term = new Terminal({
       cursorBlink: true,
@@ -165,8 +167,10 @@ export default function TerminalView({ session, host, onBack, onSessionUpdate }:
 
     // Wait for font to load before fitting — prevents spacing issues
     document.fonts.ready.then(() => {
+      if (disposed) return;
       fitAndResize();
       requestAnimationFrame(() => {
+        if (disposed) return;
         fitAndResize();
         term.focus();
       });
@@ -303,6 +307,7 @@ export default function TerminalView({ session, host, onBack, onSessionUpdate }:
     });
 
     return () => {
+      disposed = true;
       inputData.dispose();
       if (writeRafId) cancelAnimationFrame(writeRafId);
       window.removeEventListener('resize', handleResize);
@@ -317,7 +322,17 @@ export default function TerminalView({ session, host, onBack, onSessionUpdate }:
       if (fitTimeoutRef.current) clearTimeout(fitTimeoutRef.current);
       socket.detach(attachedSessionIdRef.current);
       socket.disconnect();
-      term.dispose();
+      socketRef.current = null;
+      fitAddonRef.current = null;
+      terminalRef.current = null;
+      try {
+        term.dispose();
+      } catch (error) {
+        // xterm WebGL renderer can throw during teardown after route changes
+        // if its internal atlas was already disposed. Cleanup must never crash
+        // React navigation; resources are being released as part of unmount.
+        console.warn('Terminal disposal failed during unmount:', error);
+      }
     };
   }, [fitAndResize, scheduleFitAndResize, hostUrl]);
 

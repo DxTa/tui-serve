@@ -69,23 +69,15 @@ write_generated_config() {
 
   cat > /etc/remote-agent-tui/default-config.json << EOF
 {
-  "commands": {
-    "claude": {
-      "bin": "claude",
-      "defaultArgs": [],
-      "allowedCwdRoots": [$roots_json]
-    },
-    "codex": {
-      "bin": "codex",
-      "defaultArgs": [],
-      "allowedCwdRoots": [$roots_json]
-    },
-    "pi": {
-      "bin": "pi",
-      "defaultArgs": [],
-      "allowedCwdRoots": [$roots_json]
-    }
-  }
+  "commands": [
+    { "id": "pi", "label": "Pi Coding Agent", "command": "pi", "allowedCwdRoots": [$roots_json] },
+    { "id": "claude", "label": "Claude Coding Agent", "command": "claude", "allowedCwdRoots": [$roots_json] },
+    { "id": "opencode", "label": "OpenCode", "command": "opencode", "allowedCwdRoots": [$roots_json] },
+    { "id": "codex", "label": "Codex Coding Agent", "command": "codex", "allowedCwdRoots": [$roots_json] }
+  ],
+  "hosts": [
+    { "id": "local", "name": "This Machine", "address": "localhost", "port": 5555 }
+  ]
 }
 EOF
 }
@@ -103,10 +95,14 @@ import { readFileSync, writeFileSync } from 'node:fs';
 const configPath = '/etc/remote-agent-tui/default-config.json';
 const installerHome = process.env.INSTALLER_HOME;
 const config = JSON.parse(readFileSync(configPath, 'utf8'));
-const commands = config.commands ?? {};
+
+// Support both array format [{id, command, ...}] and legacy object format {commandId: {bin, ...}}
+const commands = Array.isArray(config.commands)
+  ? config.commands
+  : Object.values(config.commands ?? {});
 let changed = false;
 
-for (const command of Object.values(commands)) {
+for (const command of commands) {
   if (!command || typeof command !== 'object') continue;
   const roots = Array.isArray(command.allowedCwdRoots) ? command.allowedCwdRoots : [];
   if (!roots.includes(installerHome)) {

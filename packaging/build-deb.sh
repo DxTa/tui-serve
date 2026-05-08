@@ -196,32 +196,47 @@ tar -xzf "$NODE_TARBALL_PATH" -C "$NODE_EXTRACT" \
 NODE_BIN_SIZE=$(du -sh "${NODE_EXTRACT}/bin/node" | cut -f1)
 echo "    Node.js binary: ${NODE_BIN_SIZE} ✓"
 
-# ── Stage 1: Build frontend ──
+# ── Stage 1: Install all workspace dependencies ──
+# This project uses npm workspaces (root package.json defines workspaces for
+# packages/shared, server, and tui-web). Dependencies are hoisted to the root
+# node_modules/ by npm, so we must install from the project root.
+echo ">>> Installing workspace dependencies..."
+cd "${PROJECT_DIR}"
+npm ci 2>/dev/null || npm install
+echo "    Workspace dependencies installed ✓"
+
+# ── Stage 1.5: Build shared package ──
+# @remote-agent-tui/shared is a file: dependency of server. Its dist/ must
+# exist before the server can type-check and compile.
+echo ">>> Building shared package..."
+cd "${PROJECT_DIR}/packages/shared"
+npm run build
+echo "    Shared package built ✓"
+
+# ── Stage 2: Build frontend ──
 echo ">>> Building frontend..."
 cd "${PROJECT_DIR}/tui-web"
-npm ci --ignore-scripts 2>/dev/null || npm ci
 npm run build
+cd "${PROJECT_DIR}"
+npm run validate:web-dist
+
 echo "    Frontend built ✓"
 
-# ── Stage 2: Build backend ──
+# ── Stage 3: Build backend ──
 echo ">>> Building backend..."
 cd "${PROJECT_DIR}/server"
-npm ci 2>/dev/null || npm install
 npm run build
 echo "    Backend built ✓"
 
-# ── Stage 3: Prune devDependencies for production ──
+# ── Stage 4: Prune devDependencies for production ──
+# Must prune from project root — npm workspaces hoist production deps to
+# root node_modules/, so pruning from server/ alone would miss most packages.
 echo ">>> Pruning devDependencies..."
-cd "${PROJECT_DIR}/server"
+cd "${PROJECT_DIR}"
 npm prune --omit=dev 2>/dev/null || true
-# Ensure @fastify/static is present (runtime dep, was previously in devDeps)
-if ! node -e "require.resolve('@fastify/static')" 2>/dev/null; then
-  echo "    Installing @fastify/static (runtime dep)..."
-  npm install @fastify/static 2>/dev/null
-fi
 echo "    Production node_modules ready ✓"
 
-# ── Stage 4: Assemble package directory ──
+# ── Stage 5: Assemble package directory ──
 echo ">>> Assembling package directory..."
 
 # -- Bundled Node.js runtime: /usr/lib/remote-agent-tui/node/ --
@@ -236,11 +251,36 @@ mkdir -p "${PKG_DIR}/usr/lib/remote-agent-tui/server/node_modules"
 cp -R "${PROJECT_DIR}/server/dist/"* "${PKG_DIR}/usr/lib/remote-agent-tui/server/dist/"
 cp "${PROJECT_DIR}/server/package.json" "${PKG_DIR}/usr/lib/remote-agent-tui/server/"
 cp "${PROJECT_DIR}/server/package-lock.json" "${PKG_DIR}/usr/lib/remote-agent-tui/server/"
-cp -a "${PROJECT_DIR}/server/node_modules/." "${PKG_DIR}/usr/lib/remote-agent-tui/server/node_modules/"
+
+# Copy root node_modules first (contains hoisted production deps like fastify,
+# ws, zod, node-pty) then overlay server/node_modules on top (workspace symlinks
+# and any non-hoisted deps).
+cp -a "${PROJECT_DIR}/node_modules/." "${PKG_DIR}/usr/lib/remote-agent-tui/server/node_modules/"
+if [ -d "${PROJECT_DIR}/server/node_modules" ]; then
+  cp -a "${PROJECT_DIR}/server/node_modules/." "${PKG_DIR}/usr/lib/remote-agent-tui/server/node_modules/"
+fi
+
+# Resolve workspace symlinks that would be broken inside the package.
+# npm workspaces creates symlinks like @remote-agent-tui/shared -> ../../packages/shared
+# which point outside the node_modules tree. Replace them with real copies.
+PKG_NM="${PKG_DIR}/usr/lib/remote-agent-tui/server/node_modules"
+
+if [ -L "${PKG_NM}/@remote-agent-tui/shared" ]; then
+  # Resolve from the source (project) node_modules, not the package copy.
+  # The copied symlink's relative target (../../packages/shared) won't resolve
+  # inside the package directory, so readlink -f on the copy would fail.
+  SHARED_TARGET="$(readlink -f "${PROJECT_DIR}/node_modules/@remote-agent-tui/shared")"
+  rm "${PKG_NM}/@remote-agent-tui/shared"
+  cp -a "${SHARED_TARGET}" "${PKG_NM}/@remote-agent-tui/shared"
+fi
+
+# Remove root workspace self-link (not needed at runtime)
+rm -f "${PKG_NM}/remote-agent-tui-server"
 
 # -- Frontend static assets: /usr/share/remote-agent-tui/web/ --
 mkdir -p "${PKG_DIR}/usr/share/remote-agent-tui/web"
 cp -R "${PROJECT_DIR}/tui-web/dist/"* "${PKG_DIR}/usr/share/remote-agent-tui/web/"
+node "${PROJECT_DIR}/scripts/validate-web-dist.mjs" "${PKG_DIR}/usr/share/remote-agent-tui/web"
 
 # -- Default config (reference copy) --
 cp "${PROJECT_DIR}/server/default-config.json" "${PKG_DIR}/usr/share/remote-agent-tui/default-config.json"
@@ -279,7 +319,7 @@ chmod 755 "${PKG_DIR}/usr/share/doc/remote-agent-tui/install-user-service.sh"
 
 echo "    Files assembled ✓"
 
-# ── Stage 4.5: Package layout sanity checks ──
+# ── Stage 5.5: Package layout sanity checks ──
 echo ">>> Package layout sanity checks..."
 SERVER_DIR="${PKG_DIR}/usr/lib/remote-agent-tui/server"
 
@@ -291,7 +331,15 @@ fi
 
 if [ -d "${SERVER_DIR}/node_modules/node_modules" ]; then
   echo "❌ Invalid nested node_modules layout: ${SERVER_DIR}/node_modules/node_modules" >&2
-  echo "   Copy node_modules contents with: cp -a server/node_modules/. DEST/" >&2
+  echo "   This indicates a broken overlap of root + server node_modules." >&2
+  exit 1
+fi
+
+# Verify broken workspace symlinks were fully resolved
+if [ -L "${SERVER_DIR}/node_modules/@remote-agent-tui/shared" ]; then
+  SHARED_LINK_TARGET="$(readlink "${SERVER_DIR}/node_modules/@remote-agent-tui/shared")"
+  echo "❌ Broken workspace symlink still present: @remote-agent-tui/shared -> ${SHARED_LINK_TARGET}" >&2
+  echo "   This symlink points outside node_modules and will not resolve at runtime." >&2
   exit 1
 fi
 
@@ -302,7 +350,7 @@ fi
 
 echo "    Package layout sane ✓"
 
-# ── Stage 5: Create DEBIAN control files ──
+# ── Stage 6: Create DEBIAN control files ──
 echo ">>> Creating DEBIAN control files..."
 
 mkdir -p "${PKG_DIR}/DEBIAN"
@@ -350,7 +398,7 @@ chmod 755 "${PKG_DIR}/DEBIAN/postrm"
 
 echo "    DEBIAN control files ✓"
 
-# ── Stage 5.5: ABI audit ──
+# ── Stage 6.5: ABI audit ──
 # Scan all .node files for GLIBC_/GLIBCXX_ version symbols that exceed our
 # minimum targets. This catches native modules built on a newer glibc that
 # would crash on older systems at runtime.
@@ -420,7 +468,7 @@ else
   echo "  No .node files found — skipping ABI audit"
 fi
 
-# ── Stage 6: Build the .deb ──
+# ── Stage 7: Build the .deb ──
 echo ">>> Building .deb package..."
 
 OUTPUT_DIR="${PROJECT_DIR}/packaging/dist"
@@ -432,31 +480,29 @@ DEB_PATH="${OUTPUT_DIR}/${PKG_NAME}_${PKG_VERSION}_${ARCH}.deb"
 DEB_SIZE=$(du -sh "$DEB_PATH" | cut -f1)
 
 echo ""
-echo "╔══════════════════════════════════════════════════════════╗"
-echo "║            Build Complete!                               ║"
-echo "╠══════════════════════════════════════════════════════════╣"
-echo "║  Package:  ${DEB_PATH}"
-echo "║  Size:     ${DEB_SIZE}"
-echo "║  Node.js:  v${NODE_VERSION} (bundled)"
-echo "╠══════════════════════════════════════════════════════════╣"
-echo "║                                                          ║"
-echo "║  Install (no Node.js needed on target!):                ║"
-echo "║    sudo dpkg -i ${PKG_NAME}_${PKG_VERSION}_${ARCH}.deb"
-echo "║    sudo apt-get install -f   # fix any missing libs     ║"
-echo "║                                                          ║"
-echo "║  View your auth token:                                   ║"
-echo "║    sudo cat /etc/remote-agent-tui/env | grep AUTH_TOKEN  ║"
-echo "║                                                          ║"
-echo "║  Manage the service:                                     ║"
-echo "║    sudo systemctl status remote-agent-tui                ║"
-echo "║    sudo systemctl restart remote-agent-tui               ║"
-echo "║    journalctl -u remote-agent-tui -f                     ║"
-echo "║                                                          ║"
-echo "║  Health check:                                           ║"
-echo "║    sudo /usr/share/doc/remote-agent-tui/doctor.sh       ║"
-echo "║    (or: ./packaging/scripts/doctor.sh)                   ║"
-echo "║                                                          ║"
-echo "║  Uninstall:                                              ║"
-echo "║    sudo apt remove remote-agent-tui                      ║"
-echo "║    sudo apt purge remote-agent-tui  # removes data+conf  ║"
-echo "╚══════════════════════════════════════════════════════════╝"
+echo "  Build complete — .deb package ready"
+echo ""
+echo "  Package:  ${DEB_PATH}"
+echo "  Size:     ${DEB_SIZE}"
+echo "  Node.js:  v${NODE_VERSION} (bundled, no external Node.js needed)"
+echo ""
+echo "  Install on target:"
+echo "    sudo apt install ./${PKG_NAME}_${PKG_VERSION}_${ARCH}.deb"
+echo "    # or: sudo dpkg -i ${PKG_NAME}_${PKG_VERSION}_${ARCH}.deb && sudo apt-get install -f"
+echo ""
+echo "  Install prints your generated auth token automatically."
+echo "  To view it later: sudo cat /etc/remote-agent-tui/env"
+echo ""
+echo "  Desktop/dev (recommended, agents run as your user):"
+echo "    /usr/share/doc/remote-agent-tui/install-user-service.sh"
+echo ""
+echo "  Headless/appliance (agents run as system user):"
+echo "    sudo systemctl enable --now remote-agent-tui"
+echo ""
+echo "  Manage:  sudo systemctl status remote-agent-tui"
+echo "  Logs:     journalctl -u remote-agent-tui -f"
+echo "  Doctor:   sudo /usr/share/doc/remote-agent-tui/doctor.sh"
+echo ""
+echo "  Uninstall:"
+echo "    sudo apt remove remote-agent-tui       # keeps config/data"
+echo "    sudo apt purge remote-agent-tui        # removes everything"

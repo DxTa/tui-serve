@@ -15,6 +15,16 @@ export async function authMiddleware(request: FastifyRequest, reply: FastifyRepl
     return;
   }
 
+  // Serve static assets (SPA shell) without auth so the browser can load
+  // the login form. API endpoints and WebSocket connections still require auth.
+  if (
+    request.method === 'GET' &&
+    !request.url.startsWith('/api/') &&
+    !request.url.startsWith('/ws')
+  ) {
+    return;
+  }
+
   const authHeader = request.headers.authorization;
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
     reply.code(401).send({ error: 'AUTH_REQUIRED', message: 'Authorization header required' });

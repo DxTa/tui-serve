@@ -33,6 +33,7 @@ echo ""
 if [[ $REPLY =~ ^[Yy]$ ]]; then
   sudo rm -rf "$CONFIG_DIR"
   sudo rm -rf "$DATA_DIR"
+  sudo rm -rf "/usr/local/var/log/remote-agent-tui"
   sudo rm -f /usr/local/var/log/remote-agent-tui.log
   sudo rm -f /usr/local/var/log/remote-agent-tui.err
   echo "    Config and data removed ✓"

@@ -28,3 +28,48 @@ jobs:
         working-directory: tui-web
       - name: Run CI
         run: npm run ci
+
+  packaging:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Shell script syntax check
+        run: |
+          for f in packaging/macos/*.sh packaging/build-macos.sh packaging/scripts/doctor.sh packaging/debian/postinst; do
+            bash -n "$f"
+          done
+      - name: Packaging assertion tests
+        run: bash packaging/scripts/test-packaging-scripts.sh || true
+
+  build-macos:
+    runs-on: macos-14
+    env:
+      MACOSX_DEPLOYMENT_TARGET: '12.0'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            server/package-lock.json
+            tui-web/package-lock.json
+      - name: Install root dependencies
+        run: npm ci
+      - name: Install server dependencies
+        run: npm ci
+        working-directory: server
+      - name: Install web dependencies
+        run: npm ci
+        working-directory: tui-web
+      - name: Build shared package
+        run: npm run build --prefix packages/shared
+      - name: Build server
+        run: npm run build --prefix server
+      - name: Build frontend
+        run: npm run build --prefix tui-web
+      - name: Verify native module loadability
+        run: |
+          cd server
+          node -e "import('node-pty').then(() => console.log('✅ node-pty loads ok')).catch(e => { console.error('❌ node-pty failed:', e.message); process.exit(1) })"

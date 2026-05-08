@@ -1,0 +1,290 @@
+#!/bin/sh
+# postinst: post-install script for remote-agent-tui
+# Follows dh_installsystemd canonical patterns (Debian Policy §9.3)
+set -e
+
+# deb-systemd-invoke and deb-systemd-helper may not exist on minimal systems
+# (provided by init-system-helpers, typically pre-installed)
+if command -v deb-systemd-invoke >/dev/null 2>&1; then
+  DEB_SYSTEMD_INVOKE="deb-systemd-invoke"
+else
+  DEB_SYSTEMD_INVOKE="systemctl"
+fi
+if command -v deb-systemd-helper >/dev/null 2>&1; then
+  DEB_SYSTEMD_HELPER="deb-systemd-helper"
+else
+  DEB_SYSTEMD_HELPER=""
+fi
+
+json_escape() {
+  printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
+}
+
+append_root() {
+  root="$1"
+  [ -n "$root" ] || return 0
+
+  case " $ALLOWED_ROOTS " in
+    *" $root "*) return 0 ;;
+  esac
+
+  ALLOWED_ROOTS="$ALLOWED_ROOTS $root"
+}
+
+get_installer_home() {
+  if [ -n "${SUDO_USER:-}" ] && [ "${SUDO_USER:-}" != "root" ]; then
+    getent passwd "$SUDO_USER" 2>/dev/null | cut -d: -f6 || true
+  fi
+}
+
+write_generated_config() {
+  ALLOWED_ROOTS=""
+
+  installer_home="$(get_installer_home)"
+  if [ -n "$installer_home" ] && [ -d "$installer_home" ]; then
+    append_root "$installer_home"
+  fi
+
+  append_root "/home/pi"
+  append_root "/tmp"
+  append_root "/var/lib/remote-agent-tui"
+
+  roots_json=""
+  for root in $ALLOWED_ROOTS; do
+    escaped_root="$(json_escape "$root")"
+    if [ -z "$roots_json" ]; then
+      roots_json="\"$escaped_root\""
+    else
+      roots_json="$roots_json, \"$escaped_root\""
+    fi
+  done
+
+  cat > /etc/remote-agent-tui/default-config.json << EOF
+{
+  "commands": {
+    "claude": {
+      "bin": "claude",
+      "defaultArgs": [],
+      "allowedCwdRoots": [$roots_json]
+    },
+    "codex": {
+      "bin": "codex",
+      "defaultArgs": [],
+      "allowedCwdRoots": [$roots_json]
+    },
+    "pi": {
+      "bin": "pi",
+      "defaultArgs": [],
+      "allowedCwdRoots": [$roots_json]
+    }
+  }
+}
+EOF
+}
+
+ensure_installer_home_in_config() {
+  installer_home="$(get_installer_home)"
+  [ -n "$installer_home" ] || return 0
+  [ -d "$installer_home" ] || return 0
+  [ -f /etc/remote-agent-tui/default-config.json ] || return 0
+  [ -x /usr/lib/remote-agent-tui/node/bin/node ] || return 0
+
+  INSTALLER_HOME="$installer_home" /usr/lib/remote-agent-tui/node/bin/node --input-type=module <<'NODEEOF'
+import { readFileSync, writeFileSync } from 'node:fs';
+
+const configPath = '/etc/remote-agent-tui/default-config.json';
+const installerHome = process.env.INSTALLER_HOME;
+const config = JSON.parse(readFileSync(configPath, 'utf8'));
+const commands = config.commands ?? {};
+let changed = false;
+
+for (const command of Object.values(commands)) {
+  if (!command || typeof command !== 'object') continue;
+  const roots = Array.isArray(command.allowedCwdRoots) ? command.allowedCwdRoots : [];
+  if (!roots.includes(installerHome)) {
+    command.allowedCwdRoots = [installerHome, ...roots];
+    changed = true;
+  } else if (roots[0] !== installerHome) {
+    command.allowedCwdRoots = [installerHome, ...roots.filter((root) => root !== installerHome)];
+    changed = true;
+  }
+}
+
+if (changed) {
+  writeFileSync(configPath, JSON.stringify(config, null, 2) + '\n');
+}
+NODEEOF
+}
+
+auto_refresh_installer_user_service() {
+  # dpkg maintainer scripts run as root, but desktop/dev installs usually use
+  # the per-user service so agents inherit the real user's HOME, PATH, SSH keys,
+  # tmux socket, and dotfiles. When upgrading via `sudo dpkg -i`, refresh that
+  # install too so ~/.local/share/remote-agent-tui gets the new server/web assets.
+  [ -n "${SUDO_USER:-}" ] || return 0
+  [ "${SUDO_USER:-}" != "root" ] || return 0
+  [ -x /usr/share/doc/remote-agent-tui/install-user-service.sh ] || return 0
+
+  installer_user="$SUDO_USER"
+  installer_home="$(getent passwd "$installer_user" 2>/dev/null | cut -d: -f6 || true)"
+  installer_uid="$(id -u "$installer_user" 2>/dev/null || true)"
+  [ -n "$installer_home" ] && [ -d "$installer_home" ] || return 0
+  [ -n "$installer_uid" ] || return 0
+
+  user_service="$installer_home/.config/systemd/user/remote-agent-tui.service"
+  user_prefix="$installer_home/.local/share/remote-agent-tui"
+
+  # Avoid surprising fresh installs: auto-refresh only when a user install or
+  # copied app tree already exists. Fresh installs still print the explicit command.
+  if [ ! -f "$user_service" ] && [ ! -d "$user_prefix" ]; then
+    return 0
+  fi
+
+  echo ""
+  echo "Refreshing Remote Agent TUI user install for $installer_user..."
+
+  if [ -d "/run/user/$installer_uid" ]; then
+    if runuser -u "$installer_user" -- env \
+      HOME="$installer_home" \
+      USER="$installer_user" \
+      LOGNAME="$installer_user" \
+      XDG_RUNTIME_DIR="/run/user/$installer_uid" \
+      /usr/share/doc/remote-agent-tui/install-user-service.sh; then
+      echo "User service assets refreshed for $installer_user."
+    else
+      echo "Warning: could not refresh user service automatically." >&2
+      echo "Run as $installer_user:" >&2
+      echo "  /usr/share/doc/remote-agent-tui/install-user-service.sh" >&2
+      echo "  systemctl --user restart remote-agent-tui" >&2
+    fi
+  else
+    echo "User systemd runtime not available for $installer_user; skipping auto-refresh." >&2
+    echo "Run after login:" >&2
+    echo "  /usr/share/doc/remote-agent-tui/install-user-service.sh" >&2
+    echo "  systemctl --user restart remote-agent-tui" >&2
+  fi
+}
+
+case "$1" in
+  configure)
+    # ── Create system user ──
+    if ! getent passwd remote-agent-tui >/dev/null 2>&1; then
+      adduser --quiet --system --no-create-home \
+        --home /var/lib/remote-agent-tui \
+        --gecos "Remote Agent TUI" \
+        --group remote-agent-tui
+    fi
+
+    # ── Ensure data and log directories exist with correct ownership ──
+    mkdir -p /var/lib/remote-agent-tui
+    mkdir -p /var/log/remote-agent-tui
+    chown -R remote-agent-tui:remote-agent-tui /var/lib/remote-agent-tui
+    chown -R remote-agent-tui:remote-agent-tui /var/log/remote-agent-tui
+
+    # ── Config directory ──
+    mkdir -p /etc/remote-agent-tui
+    if [ -z "$2" ]; then
+      write_generated_config
+    elif [ ! -f /etc/remote-agent-tui/default-config.json ]; then
+      cp /usr/share/remote-agent-tui/default-config.json \
+        /etc/remote-agent-tui/default-config.json
+    fi
+    ensure_installer_home_in_config
+    chmod 640 /etc/remote-agent-tui/default-config.json
+    chown remote-agent-tui:remote-agent-tui /etc/remote-agent-tui/default-config.json
+
+    # ── Create env file with defaults if it doesn't exist ──
+    # AUTH_TOKEN is empty by default = no auth required (for trusted/private networks)
+    # Set AUTH_TOKEN=your-token-here to enable authentication
+    if [ ! -f /etc/remote-agent-tui/env ]; then
+      cat > /etc/remote-agent-tui/env << 'ENVEOF'
+# Remote Agent TUI environment configuration
+# Edit this file to change settings, then restart:
+#   sudo systemctl restart remote-agent-tui
+
+# Auth token: leave empty for no auth (trusted networks only)
+# Set a token to require authentication: AUTH_TOKEN=your-long-random-token-here
+AUTH_TOKEN=
+PORT=5555
+NODE_ENV=production
+
+# Paths (pre-configured for packaged installation)
+REMOTE_AGENT_TUI_CONFIG=/etc/remote-agent-tui/default-config.json
+REMOTE_AGENT_TUI_DATA_DIR=/var/lib/remote-agent-tui
+REMOTE_AGENT_TUI_WEB_DIR=/usr/share/remote-agent-tui/web
+ENVEOF
+      chmod 600 /etc/remote-agent-tui/env
+      chown remote-agent-tui:remote-agent-tui /etc/remote-agent-tui/env
+    fi
+
+    # ── Install banner (always shown on fresh install) ──
+    if [ -z "$2" ]; then
+      echo ""
+      echo "============================================"
+      echo " Remote Agent TUI - Installed"
+      echo "============================================"
+      echo ""
+      echo " No auth token required by default."
+      echo " System service is installed but not started by default."
+      echo ""
+      echo " Recommended for desktop/dev machines: install your own user service:"
+      echo "   /usr/share/doc/remote-agent-tui/install-user-service.sh"
+      echo ""
+      echo " Then open: http://localhost:5555"
+      echo ""
+      echo " For appliance/headless mode, enable the system service manually:"
+      echo "   sudo systemctl enable --now remote-agent-tui.service"
+      echo ""
+      echo " To enable authentication, edit:"
+      echo "   sudo nano /etc/remote-agent-tui/env"
+      echo "   # Set: AUTH_TOKEN=your-long-random-token"
+      echo "   sudo systemctl restart remote-agent-tui"
+      echo ""
+      echo " Workspace roots include: /home/pi, /tmp, /var/lib/remote-agent-tui"
+      if [ -n "${SUDO_USER:-}" ] && [ "${SUDO_USER:-}" != "root" ]; then
+        echo " Installing user's home is included when detected."
+      fi
+      echo " Add project roots in:"
+      echo "   sudo nano /etc/remote-agent-tui/default-config.json"
+      echo ""
+      echo " Config:  sudo nano /etc/remote-agent-tui/default-config.json"
+      echo " Logs:    journalctl -u remote-agent-tui -f"
+      echo " Doctor:  sudo /usr/share/doc/remote-agent-tui/doctor.sh"
+      echo "============================================"
+      echo ""
+    fi
+
+    # ── systemd unit management ──
+    # Unmask the unit (may have been masked by admin or previous postrm)
+    if [ -n "$DEB_SYSTEMD_HELPER" ]; then
+      "$DEB_SYSTEMD_HELPER" unmask remote-agent-tui.service >/dev/null 2>&1 || true
+    fi
+
+    # ── systemd unit registration ──
+    # Install the system unit but do not enable/start it by default. Desktop/dev
+    # users should run the per-user service so agents inherit their real HOME,
+    # PATH, tmux socket, dotfiles, and credentials. Appliance/headless installs
+    # can explicitly enable the system service.
+    if [ -z "${DPKG_ROOT:-}" ] && [ -d /run/systemd/system ]; then
+      systemctl --system daemon-reload >/dev/null 2>&1 || true
+      systemctl reset-failed remote-agent-tui.service >/dev/null 2>&1 || true
+    fi
+
+    if [ -n "$DEB_SYSTEMD_HELPER" ]; then
+      "$DEB_SYSTEMD_HELPER" update-state remote-agent-tui.service >/dev/null 2>&1 || true
+    fi
+
+    auto_refresh_installer_user_service
+
+    ;;
+
+  abort-upgrade|abort-deconfigure|abort-remove)
+    # Nothing to do on abort
+    ;;
+
+  *)
+    echo "postinst called with unknown argument \`$1'" >&2
+    ;;
+esac
+
+exit 0

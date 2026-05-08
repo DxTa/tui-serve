@@ -18,14 +18,8 @@ jobs:
             package-lock.json
             server/package-lock.json
             tui-web/package-lock.json
-      - name: Install root dependencies
+      - name: Install dependencies
         run: npm ci
-      - name: Install server dependencies
-        run: npm ci
-        working-directory: server
-      - name: Install web dependencies
-        run: npm ci
-        working-directory: tui-web
       - name: Run CI
         run: npm run ci
 

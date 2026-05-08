@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { api } from './lib/apiClient';
 import { setAuthToken } from './lib/auth';
 import { syncFromServer, requestPersistentStorage } from './lib/sync';
@@ -16,6 +16,13 @@ export default function App() {
   const [selectedHost, setSelectedHost] = useState<Host | null>(null);
   const [loading, setLoading] = useState(false);
   const { sessionId: currentSessionId, view, setHash } = useHashRoute();
+
+  // Prevent loadSessions from re-setting selectedSession after the user
+  // has navigated back to the dashboard (e.g. after killing a session).
+  // Without this guard, the in-flight fetch may find the old session in the
+  // server list and call setSelectedSession, which then interferes with the
+  // navigation back to dashboard.
+  const navigatedBackRef = useRef(false);
 
   // Use Dexie's useLiveQuery for reactive session list
   const localSessions = useLiveQuery(() => db.sessions.orderBy('createdAt').reverse().toArray(), []) || [];
@@ -50,13 +57,16 @@ export default function App() {
         setHash('/');
       }
 
-      // Keep the selected session data fresh
-      if (currentSessionId) {
+      // Keep the selected session data fresh — but skip if we've navigated
+      // back to the dashboard after a kill so the stale session isn't re-set.
+      if (currentSessionId && !navigatedBackRef.current) {
         const fresh = list.find((s) => s.id === currentSessionId);
         if (fresh) {
           setSelectedSession(fresh);
         }
       }
+      // Clear the navigation-back flag after processing
+      navigatedBackRef.current = false;
     } catch (err: any) {
       if (err.message === 'Unauthorized') {
         setAuthed(false);
@@ -173,6 +183,7 @@ export default function App() {
   };
 
   const handleBack = () => {
+    navigatedBackRef.current = true;
     setSelectedSession(null);
     setSelectedHost(null);
     setHash('/');

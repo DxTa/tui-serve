@@ -31,6 +31,12 @@ export default function TerminalView({ session, host, onBack, onSessionUpdate }:
   const fitTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const currentSessionIdRef = useRef(session.id);
   const attachedSessionIdRef = useRef(session.id);
+  const scrollProxyRef = useRef<HTMLDivElement>(null);
+  const scrollContentRef = useRef<HTMLDivElement>(null);
+  const proxySyncingFromTermRef = useRef(false);
+  const proxySyncingFromProxyRef = useRef(false);
+  const proxyPointerStartYRef = useRef<number | null>(null);
+  const [isMobileTerminal, setIsMobileTerminal] = useState(false);
 
   // When host is 'localhost' (the server that served this page), always use
   // window.location.origin — this works correctly regardless of access method
@@ -68,6 +74,49 @@ export default function TerminalView({ session, host, onBack, onSessionUpdate }:
   const visualViewportHeight = useVisualViewportHeight(() => scheduleFitAndResize(50));
 
   useEffect(() => {
+    const update = () => setIsMobileTerminal(isTouchDevice());
+    update();
+    const media = window.matchMedia('(pointer: coarse)');
+    media.addEventListener?.('change', update);
+    return () => media.removeEventListener?.('change', update);
+  }, []);
+
+  const getMobileScrollMaxLine = useCallback(() => {
+    const term = terminalRef.current;
+    return Math.max(0, term?.buffer.active.baseY || 0);
+  }, []);
+
+  const lineToProxyTop = useCallback((line: number) => {
+    const proxy = scrollProxyRef.current;
+    const content = scrollContentRef.current;
+    const maxLine = getMobileScrollMaxLine();
+    if (!proxy || !content || maxLine <= 0) return 0;
+    const maxTop = Math.max(0, content.scrollHeight - proxy.clientHeight);
+    return Math.round((Math.max(0, Math.min(maxLine, line)) / maxLine) * maxTop);
+  }, [getMobileScrollMaxLine]);
+
+  const proxyTopToLine = useCallback((scrollTop: number) => {
+    const proxy = scrollProxyRef.current;
+    const content = scrollContentRef.current;
+    const maxLine = getMobileScrollMaxLine();
+    if (!proxy || !content || maxLine <= 0) return 0;
+    const maxTop = Math.max(1, content.scrollHeight - proxy.clientHeight);
+    return Math.round((Math.max(0, Math.min(maxTop, scrollTop)) / maxTop) * maxLine);
+  }, [getMobileScrollMaxLine]);
+
+  const syncMobileScrollProxyToTerm = useCallback(() => {
+    const term = terminalRef.current;
+    const proxy = scrollProxyRef.current;
+    if (!term || !proxy || proxySyncingFromProxyRef.current) return;
+
+    proxySyncingFromTermRef.current = true;
+    proxy.scrollTop = lineToProxyTop(term.buffer.active.viewportY);
+    requestAnimationFrame(() => {
+      proxySyncingFromTermRef.current = false;
+    });
+  }, [lineToProxyTop]);
+
+  useEffect(() => {
     const previousSessionId = attachedSessionIdRef.current;
     currentSessionIdRef.current = session.id;
 
@@ -77,7 +126,7 @@ export default function TerminalView({ session, host, onBack, onSessionUpdate }:
     terminalRef.current?.clear();
     socketRef.current?.attach(session.id);
     attachedSessionIdRef.current = session.id;
-    terminalRef.current?.focus();
+    if (!isTouchDevice()) terminalRef.current?.focus();
     scheduleFitAndResize(0);
   }, [session.id, scheduleFitAndResize]);
 
@@ -124,6 +173,7 @@ export default function TerminalView({ session, host, onBack, onSessionUpdate }:
     const fitAddon = new FitAddon();
     term.loadAddon(fitAddon);
     term.open(termRef.current);
+    if (isTouchDevice()) suppressMobileTerminalInput(termRef.current);
 
     // Renderer chain: WebGL (fastest) → Canvas → DOM fallback.
     // DOM renderer creates/manipulates many <span> nodes per frame; Canvas/WebGL
@@ -163,7 +213,7 @@ export default function TerminalView({ session, host, onBack, onSessionUpdate }:
       return true; // don't interfere with other keys
     });
 
-    term.focus();
+    if (!isTouchDevice()) term.focus();
 
     // Wait for font to load before fitting — prevents spacing issues
     document.fonts.ready.then(() => {
@@ -172,7 +222,8 @@ export default function TerminalView({ session, host, onBack, onSessionUpdate }:
       requestAnimationFrame(() => {
         if (disposed) return;
         fitAndResize();
-        term.focus();
+        if (!isTouchDevice()) term.focus();
+        else suppressMobileTerminalInput(termRef.current);
       });
     });
 
@@ -207,7 +258,7 @@ export default function TerminalView({ session, host, onBack, onSessionUpdate }:
         offset += chunk.length;
       }
       writeBuffer = [];
-      term.write(merged);
+      term.write(merged, () => requestAnimationFrame(syncMobileScrollProxyToTerm));
     };
     const scheduleWrite = (data: Uint8Array) => {
       writeBuffer.push(data);
@@ -228,7 +279,7 @@ export default function TerminalView({ session, host, onBack, onSessionUpdate }:
       writeBuffer = [];
       writeRafId = null;
       term.clear();
-      term.write(data);
+      term.write(data, () => requestAnimationFrame(syncMobileScrollProxyToTerm));
     };
 
     socket.onStatus = (sessionId, status, _pid, exitCode) => {
@@ -270,6 +321,10 @@ export default function TerminalView({ session, host, onBack, onSessionUpdate }:
       socket.sendInput(currentSessionIdRef.current, data);
     });
 
+    const scrollData = term.onScroll(() => {
+      syncMobileScrollProxyToTerm();
+    });
+
     // Resize handler with debounce. Browser zoom and app font zoom both change
     // character-cell geometry, so always propagate new cols/rows to PTY.
     const handleResize = () => {
@@ -309,6 +364,7 @@ export default function TerminalView({ session, host, onBack, onSessionUpdate }:
     return () => {
       disposed = true;
       inputData.dispose();
+      scrollData.dispose();
       if (writeRafId) cancelAnimationFrame(writeRafId);
       window.removeEventListener('resize', handleResize);
       if (window.visualViewport) {
@@ -334,73 +390,14 @@ export default function TerminalView({ session, host, onBack, onSessionUpdate }:
         console.warn('Terminal disposal failed during unmount:', error);
       }
     };
-  }, [fitAndResize, scheduleFitAndResize, hostUrl]);
+  }, [fitAndResize, scheduleFitAndResize, hostUrl, syncMobileScrollProxyToTerm]);
 
-  // Touch-to-scroll for mobile: xterm.js renders a canvas (.xterm-screen)
-  // on top of the scrollable viewport (.xterm-viewport). Touch events hit
-  // the screen layer first and are consumed for selection, so the viewport
-  // never receives native touch-scroll events. This effect bridges the gap
-  // by converting vertical touch swipes on the terminal container into
-  // xterm scrollLines() calls that update both the viewport and canvas.
+  // Keep mobile scroll proxy aligned after it mounts or viewport size changes.
   useEffect(() => {
-    const container = termRef.current;
-    if (!container) return;
-
-    let touchStartY = 0;
-    let lastTouchY = 0;
-    let isScrolling = false;
-    // Threshold (px) to distinguish a scroll from a tap
-    const SCROLL_THRESHOLD = 8;
-
-    const onTouchStart = (e: TouchEvent) => {
-      lastTouchY = e.touches[0].clientY;
-      touchStartY = lastTouchY;
-      isScrolling = false;
-    };
-
-    const onTouchMove = (e: TouchEvent) => {
-      const touchY = e.touches[0].clientY;
-      const deltaY = lastTouchY - touchY;
-      lastTouchY = touchY;
-
-      // Only activate scroll mode once the finger has moved past the threshold
-      if (!isScrolling && Math.abs(touchY - touchStartY) > SCROLL_THRESHOLD) {
-        isScrolling = true;
-      }
-
-      if (!isScrolling || deltaY === 0) return;
-
-      const term = terminalRef.current;
-      if (!term) return;
-
-      // Use xterm's scrollLines to keep the internal buffer and canvas in sync.
-      // A single touch-move event typically moves 1–3 px; scroll by 1 line per
-      // event, and xterm will redraw the visible portion accordingly.
-      const lines = deltaY > 0 ? 1 : -1;
-      term.scrollLines(lines);
-
-      // Prevent the page from also scrolling while the user is scrolling
-      // the terminal. Without this the browser would try to scroll the
-      // <html> element (which has overflow:hidden anyway), or on iOS the
-      // entire viewport rubber-bands.
-      e.preventDefault();
-    };
-
-    const onTouchEnd = () => {
-      isScrolling = false;
-    };
-
-    // passive:false is required on touchmove so we can call preventDefault()
-    container.addEventListener('touchstart', onTouchStart, { passive: true });
-    container.addEventListener('touchmove', onTouchMove, { passive: false });
-    container.addEventListener('touchend', onTouchEnd, { passive: true });
-
-    return () => {
-      container.removeEventListener('touchstart', onTouchStart);
-      container.removeEventListener('touchmove', onTouchMove);
-      container.removeEventListener('touchend', onTouchEnd);
-    };
-  }, []);
+    if (!isMobileTerminal) return;
+    const frame = requestAnimationFrame(syncMobileScrollProxyToTerm);
+    return () => cancelAnimationFrame(frame);
+  }, [isMobileTerminal, visualViewportHeight, fontSize, syncMobileScrollProxyToTerm]);
 
   // Keep latest session id available to stable terminal callbacks.
   useEffect(() => {
@@ -421,10 +418,11 @@ export default function TerminalView({ session, host, onBack, onSessionUpdate }:
   }, [fontSize, fitAndResize]);
 
   const changeFontSize = (delta: number) => {
+    const shouldRestoreTerminalFocus = isSoftKeyboardOpen();
     setFontSize((size) => Math.max(8, Math.min(24, size + delta)));
     requestAnimationFrame(() => {
       fitAndResize();
-      terminalRef.current?.focus();
+      if (shouldRestoreTerminalFocus) terminalRef.current?.focus();
     });
   };
 
@@ -449,28 +447,103 @@ export default function TerminalView({ session, host, onBack, onSessionUpdate }:
     return () => window.removeEventListener('keydown', handleKeyDown, true);
   }, []);
 
-  const keepTerminalFocus = (event: React.MouseEvent<HTMLButtonElement>) => {
+  const getTerminalTextarea = (root: ParentNode | null = document) =>
+    root?.querySelector<HTMLTextAreaElement>('.xterm-helper-textarea') || null;
+
+  const suppressMobileTerminalInput = (root: ParentNode | null = document) => {
+    const textarea = getTerminalTextarea(root);
+    if (!textarea) return;
+    textarea.inputMode = 'none';
+    textarea.blur();
+  };
+
+  const allowMobileTerminalInput = (root: ParentNode | null = document) => {
+    const textarea = getTerminalTextarea(root);
+    if (!textarea) return;
+    textarea.inputMode = 'text';
+  };
+
+  const blurTerminalIfKeyboardClosed = () => {
+    // Android Chrome can reopen the soft keyboard when a touch/click happens
+    // while xterm's hidden textarea remains focused. If keyboard is already
+    // closed, blur that textarea before handling toolbar controls.
+    if (isSoftKeyboardOpen()) return;
+    const active = document.activeElement;
+    if (active instanceof HTMLElement && active.classList.contains('xterm-helper-textarea')) {
+      active.blur();
+      if (isTouchDevice()) active.setAttribute('inputmode', 'none');
+    }
+  };
+
+  const preventButtonFocus = (event: React.MouseEvent<HTMLButtonElement> | React.PointerEvent<HTMLButtonElement>) => {
+    blurTerminalIfKeyboardClosed();
+    // Mobile Chrome: prevent button focus transfer on pointer down. Actions run
+    // from pointerup instead of click to avoid Android synthetic-click focus quirks.
     event.preventDefault();
   };
 
-  const handleKill = async () => {
-    const killed = await api.killSession(currentSession.id);
-    const existing = await db.sessions.get(currentSession.id);
-    if (existing) {
-      await db.sessions.put({
-        ...existing,
-        ...killed,
-        status: 'disconnected',
-        isTombstone: true,
-        attachedClients: 0,
-        agentSessionId: killed.agentSessionId || existing.agentSessionId || null,
-        lastServerSync: new Date().toISOString(),
-      });
+  const isTouchDevice = () => window.matchMedia('(pointer: coarse)').matches || navigator.maxTouchPoints > 0;
+
+  const isSoftKeyboardOpen = () => {
+    if (!window.visualViewport) return false;
+    return window.innerHeight - window.visualViewport.height > 120;
+  };
+
+  const toggleMobileKeyboard = () => {
+    const term = terminalRef.current;
+    if (!term) return;
+    const textarea = getTerminalTextarea();
+    if (!textarea) return;
+
+    if (document.activeElement === textarea && isSoftKeyboardOpen()) {
+      // Keyboard is visible: dismiss it
+      textarea.setAttribute('inputmode', 'none');
+      textarea.blur();
+    } else {
+      // Keyboard is hidden: show it
+      textarea.setAttribute('inputmode', 'text');
+      term.focus();
     }
-    socketRef.current?.kill(currentSession.id);
-    setShowKillConfirm(false);
-    setCurrentSession((prev) => ({ ...prev, status: 'killed' as SessionStatus }));
-    onBack();
+  };
+
+  const handleKill = async () => {
+    try {
+      const killed = await api.killSession(currentSession.id);
+      const existing = await db.sessions.get(currentSession.id);
+      if (existing) {
+        await db.sessions.put({
+          ...existing,
+          ...killed,
+          status: 'disconnected',
+          isTombstone: true,
+          attachedClients: 0,
+          agentSessionId: killed.agentSessionId || existing.agentSessionId || null,
+          lastServerSync: new Date().toISOString(),
+        });
+      }
+      socketRef.current?.kill(currentSession.id);
+    } catch (err) {
+      console.error('Kill failed:', err);
+      // Even if the server kill fails, still mark locally and navigate back
+      try {
+        const existing = await db.sessions.get(currentSession.id);
+        if (existing) {
+          await db.sessions.update(currentSession.id, {
+            status: 'disconnected',
+            isTombstone: true,
+            attachedClients: 0,
+            lastServerSync: new Date().toISOString(),
+          });
+        }
+      } catch (dbErr) {
+        console.error('Failed to update local session state:', dbErr);
+      }
+    } finally {
+      setShowKillConfirm(false);
+      // Navigate back immediately — don't show "killed" overlay
+      // which blocks the user from returning to the dashboard.
+      onBack();
+    }
   };
 
   const handleRestart = async () => {
@@ -508,6 +581,47 @@ export default function TerminalView({ session, host, onBack, onSessionUpdate }:
 
   const sendKey = (data: string) => {
     socketRef.current?.sendInput(currentSessionIdRef.current, data);
+  };
+
+  const scrollTerminal = (amount: 'wheelUp' | 'wheelDown') => {
+    blurTerminalIfKeyboardClosed();
+
+    // Agent TUIs use the alternate screen, so xterm scrollback APIs
+    // don't move the app viewport. Send mouse wheel SGR input instead.
+    const dataByAction: Record<typeof amount, string> = {
+      wheelUp: '\x1b[<64;10;10M',
+      wheelDown: '\x1b[<65;10;10M',
+    };
+
+    socketRef.current?.sendInput(currentSessionIdRef.current, dataByAction[amount]);
+  };
+
+  const handleMobileProxyScroll = () => {
+    const term = terminalRef.current;
+    const proxy = scrollProxyRef.current;
+    if (!term || !proxy || proxySyncingFromTermRef.current) return;
+
+    proxySyncingFromProxyRef.current = true;
+    term.scrollToLine(proxyTopToLine(proxy.scrollTop));
+    requestAnimationFrame(() => {
+      proxySyncingFromProxyRef.current = false;
+    });
+  };
+
+  const handleMobileProxyPointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (event.pointerType !== 'touch') return;
+    proxyPointerStartYRef.current = event.clientY;
+    blurTerminalIfKeyboardClosed();
+  };
+
+  const handleMobileProxyPointerUp = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (event.pointerType !== 'touch' || proxyPointerStartYRef.current === null) return;
+    const movement = Math.abs(event.clientY - proxyPointerStartYRef.current);
+    proxyPointerStartYRef.current = null;
+    if (movement > 8) return;
+
+    allowMobileTerminalInput(termRef.current);
+    terminalRef.current?.focus();
   };
 
   const connClass = connectionState === 'connected' ? 'conn-connected' :
@@ -562,14 +676,26 @@ export default function TerminalView({ session, host, onBack, onSessionUpdate }:
           {restarting && (
             <button className="btn btn-secondary btn-sm" disabled>Restarting...</button>
           )}
-          <button className="btn btn-ghost btn-sm" onMouseDown={keepTerminalFocus} onClick={() => changeFontSize(2)}>A+</button>
-          <button className="btn btn-ghost btn-sm" onMouseDown={keepTerminalFocus} onClick={() => changeFontSize(-2)}>A-</button>
+          <button type="button" tabIndex={-1} className="btn btn-ghost btn-sm" onPointerDown={preventButtonFocus} onMouseDown={preventButtonFocus} onPointerUp={() => changeFontSize(2)}>A+</button>
+          <button type="button" tabIndex={-1} className="btn btn-ghost btn-sm" onPointerDown={preventButtonFocus} onMouseDown={preventButtonFocus} onPointerUp={() => changeFontSize(-2)}>A-</button>
         </div>
       </div>
 
       {/* Terminal */}
       <div style={{ flex: 1, overflow: 'hidden', position: 'relative', minHeight: 0 }}>
         <div className="terminal-container" ref={termRef} />
+        {isMobileTerminal && isRunning && (
+          <div
+            ref={scrollProxyRef}
+            className="mobile-scroll-proxy"
+            onScroll={handleMobileProxyScroll}
+            onPointerDown={handleMobileProxyPointerDown}
+            onPointerUp={handleMobileProxyPointerUp}
+            onPointerCancel={() => { proxyPointerStartYRef.current = null; }}
+          >
+            <div ref={scrollContentRef} className="mobile-scroll-content" />
+          </div>
+        )}
         {!isRunning && !isStopped && currentSession.status !== 'killed' && currentSession.status !== 'crashed' && (
           <div style={{
             position: 'absolute', inset: 0, background: 'rgba(15,23,42,0.7)',
@@ -642,7 +768,7 @@ export default function TerminalView({ session, host, onBack, onSessionUpdate }:
       </div>
 
       {/* Mobile key bar */}
-      <MobileKeyBar onKey={sendKey} />
+      <MobileKeyBar onKey={sendKey} onScroll={scrollTerminal} showScrollControls={isMobileTerminal} onToggleKeyboard={toggleMobileKeyboard} />
 
       {/* Kill confirm modal */}
       {showKillConfirm && (
@@ -663,38 +789,114 @@ export default function TerminalView({ session, host, onBack, onSessionUpdate }:
   );
 }
 
-function MobileKeyBar({ onKey }: { onKey: (data: string) => void }) {
-  const keys: Array<{ label: string; data: string; title: string; group?: string }> = [
-    // Control keys
-    { label: 'Esc',  data: '\x1b',   title: 'Escape — cancel current input or action',            group: 'ctrl' },
-    { label: 'Tab',  data: '\t',     title: 'Tab — autocomplete or next field',                      group: 'ctrl' },
-    // Arrow keys
-    { label: '↑', data: '\x1b[A', title: 'Arrow Up — previous command / move up',    group: 'arrow' },
-    { label: '↓', data: '\x1b[B', title: 'Arrow Down — next command / move down',    group: 'arrow' },
-    { label: '←', data: '\x1b[D', title: 'Arrow Left — move cursor left',             group: 'arrow' },
-    { label: '→', data: '\x1b[C', title: 'Arrow Right — move cursor right',            group: 'arrow' },
-    // Special characters
-    { label: '/', data: '/',     title: 'Slash — start Pi command (e.g., /help)',     group: 'char' },
-    { label: '~', data: '~',     title: 'Tilde — home directory shortcut (~/)',         group: 'char' },
-    { label: '|', data: '|',     title: 'Pipe — chain commands (cmd1 | cmd2)',         group: 'char' },
-    // Enter keys
-    { label: '⇧ Enter', data: '\x1b[13;2u', title: 'Shift+Enter — new line without submitting',  group: 'enter' },
-    { label: 'Enter', data: '\r', title: 'Enter — submit command / newline',             group: 'enter' },
+function MobileKeyBar({
+  onKey,
+  onScroll,
+  showScrollControls,
+  onToggleKeyboard,
+}: {
+  onKey: (data: string) => void;
+  onScroll: (amount: 'wheelUp' | 'wheelDown') => void;
+  showScrollControls: boolean;
+  onToggleKeyboard: () => void;
+}) {
+  const controlKeys: Array<{ label: string; data: string; title: string; group?: string }> = [
+    { label: 'Esc',  data: '\x1b',   title: 'Escape — cancel current input or action', group: 'ctrl' },
+    { label: 'Tab',  data: '\t',     title: 'Tab — autocomplete or next field', group: 'ctrl' },
   ];
+
+  const arrowKeys: Array<{ label: string; data: string; title: string; group?: string }> = [
+    { label: '↑', data: '\x1b[A', title: 'Arrow Up — previous command / move up', group: 'arrow' },
+    { label: '↓', data: '\x1b[B', title: 'Arrow Down — next command / move down', group: 'arrow' },
+    { label: '←', data: '\x1b[D', title: 'Arrow Left — move cursor left', group: 'arrow' },
+    { label: '→', data: '\x1b[C', title: 'Arrow Right — move cursor right', group: 'arrow' },
+  ];
+
+  const charKeys: Array<{ label: string; data: string; title: string; group?: string }> = [
+    { label: '/', data: '/', title: 'Slash — start Pi command (e.g., /help)', group: 'char' },
+    { label: '~', data: '~', title: 'Tilde — home directory shortcut (~/)', group: 'char' },
+    { label: '|', data: '|', title: 'Pipe — chain commands (cmd1 | cmd2)', group: 'char' },
+  ];
+
+  const enterKeys: Array<{ label: string; data: string; title: string; group?: string }> = [
+    { label: '⇧ Enter', data: '\x1b[13;2u', title: 'Shift+Enter — new line without submitting', group: 'enter' },
+    { label: 'Enter', data: '\r', title: 'Enter — submit command / newline', group: 'enter' },
+  ];
+
+  const scrollButtons: Array<{ label: string; action: 'wheelUp' | 'wheelDown'; title: string }> = [
+    { label: '▲', action: 'wheelUp', title: 'Scroll up (mouse wheel up)' },
+    { label: '▼', action: 'wheelDown', title: 'Scroll down (mouse wheel down)' },
+  ];
+
+  const preventMobileButtonFocus = (event: React.PointerEvent<HTMLButtonElement>) => {
+    const active = document.activeElement;
+    if (active instanceof HTMLElement && active.classList.contains('xterm-helper-textarea')) {
+      const viewport = window.visualViewport;
+      if (!viewport || window.innerHeight - viewport.height <= 120) active.blur();
+    }
+    event.preventDefault();
+  };
+
+  const renderKeyButton = (k: { label: string; data: string; title: string; group?: string }) => (
+    <button
+      key={k.label}
+      type="button"
+      tabIndex={-1}
+      className={`btn key-${k.group || 'default'}`}
+      onPointerDown={preventMobileButtonFocus}
+      onMouseDown={(e) => e.preventDefault()}
+      onPointerUp={() => onKey(k.data)}
+      title={k.title}
+    >
+      {k.label}
+    </button>
+  );
 
   return (
     <div className="mobile-keybar">
-      {keys.map((k) => (
+      {showScrollControls && (
+        <div className="mobile-keybar-group mobile-keybar-scroll" aria-label="Scroll controls">
+          {scrollButtons.map((button) => (
+            <button
+              key={button.action}
+              type="button"
+              tabIndex={-1}
+              className="btn key-scroll"
+              onPointerDown={(e) => e.preventDefault()}
+              onMouseDown={(e) => e.preventDefault()}
+              onPointerUp={() => onScroll(button.action)}
+              title={button.title}
+            >
+              {button.label}
+            </button>
+          ))}
+        </div>
+      )}
+      <div className="mobile-keybar-group mobile-keyboard-toggle" aria-label="Keyboard toggle">
         <button
-          key={k.label}
-          className={`btn key-${k.group || 'default'}`}
+          type="button"
+          tabIndex={-1}
+          className="btn key-keyboard"
+          onPointerDown={preventMobileButtonFocus}
           onMouseDown={(e) => e.preventDefault()}
-          onClick={() => onKey(k.data)}
-          title={k.title}
+          onPointerUp={() => onToggleKeyboard()}
+          title="Toggle on-screen keyboard"
         >
-          {k.label}
+          ⌨
         </button>
-      ))}
+      </div>
+      <div className="mobile-keybar-group mobile-keybar-control" aria-label="Control keys">
+        {controlKeys.map(renderKeyButton)}
+      </div>
+      <div className="mobile-keybar-group mobile-keybar-arrows" aria-label="Arrow keys">
+        {arrowKeys.map(renderKeyButton)}
+      </div>
+      <div className="mobile-keybar-group mobile-keybar-chars" aria-label="Common characters">
+        {charKeys.map(renderKeyButton)}
+      </div>
+      <div className="mobile-keybar-group mobile-keybar-enter" aria-label="Enter keys">
+        {enterKeys.map(renderKeyButton)}
+      </div>
     </div>
   );
 }

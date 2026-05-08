@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import type { Session, Host, CommandInfo, SessionStatus } from '../lib/types';
 import type { Session as DexieSession } from '../lib/db';
 import { api } from '../lib/apiClient';
+import { db } from '../lib/db';
 
 // Agent type badge colors
 const AGENT_COLORS: Record<string, { bg: string; text: string }> = {
@@ -116,7 +117,13 @@ export default function Dashboard({
   // Long-press refs
   const longPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const longPressTriggeredRef = useRef(false);
+  const pressMovedRef = useRef(false);
   const touchStartPosRef = useRef<{ x: number; y: number } | null>(null);
+  // Track whether a touch event was already handled so we can skip
+  // the synthesized mouse events that browsers fire after touchend.
+  // Without this guard, tap-to-select in multi-select mode toggles twice
+  // (touch + mouse) which cancels itself out and appears as "not working".
+  const touchHandledRef = useRef(false);
 
   useEffect(() => {
     api.listHosts().then(setHosts).catch(() => {});
@@ -168,7 +175,12 @@ export default function Dashboard({
 
   // Long-press handlers
   const handlePressStart = useCallback((sessionId: string, e?: React.MouseEvent | React.TouchEvent) => {
+    // If a touch event already started this press, skip the synthesized mousedown.
+    if (touchHandledRef.current && e && !('touches' in e)) return;
+    if (e && 'touches' in e) touchHandledRef.current = true;
+
     longPressTriggeredRef.current = false;
+    pressMovedRef.current = false;
     // Record touch start position for movement detection
     if (e && 'touches' in e) {
       const touch = e.touches[0];
@@ -191,6 +203,8 @@ export default function Dashboard({
   }, [selectMode, toggleSelect]);
 
   const handlePressMove = useCallback((e: React.MouseEvent | React.TouchEvent) => {
+    // Skip synthesized mouse events after touch
+    if (touchHandledRef.current && !('touches' in e)) return;
     if (!longPressTimerRef.current) return;
     // If finger moved too far, cancel long press
     let currentX: number, currentY: number;
@@ -204,8 +218,14 @@ export default function Dashboard({
     }
     const startPos = touchStartPosRef.current;
     if (startPos) {
-      const dist = Math.sqrt((currentX - startPos.x) ** 2 + (currentY - startPos.y) ** 2);
-      if (dist > 10) {
+      const deltaX = currentX - startPos.x;
+      const deltaY = currentY - startPos.y;
+      const dist = Math.sqrt(deltaX ** 2 + deltaY ** 2);
+      // Mobile list scroll: any meaningful drag must cancel both long-press and
+      // eventual tap/attach. Use lower vertical threshold than horizontal so
+      // swipe-to-scroll never accidentally opens a session on touchend.
+      if (dist > 10 || Math.abs(deltaY) > 6) {
+        pressMovedRef.current = true;
         clearTimeout(longPressTimerRef.current);
         longPressTimerRef.current = null;
       }
@@ -213,16 +233,38 @@ export default function Dashboard({
   }, []);
 
   const handlePressEnd = useCallback((session: Session) => {
+    // Skip synthesized mouse events after touch — on mobile, the browser fires
+    // mousedown+mouseup after touchend, which would toggle selection a second
+    // time, canceling the first toggle and making taps appear to do nothing.
+    if (touchHandledRef.current) {
+      // This is a mouseup from a touch sequence — skip it.
+      // Reset the flag only on mouse events so the next pure-mouse press works.
+      touchHandledRef.current = false;
+      // Clear any lingering timer (safety)
+      if (longPressTimerRef.current) {
+        clearTimeout(longPressTimerRef.current);
+        longPressTimerRef.current = null;
+      }
+      longPressTriggeredRef.current = false;
+      pressMovedRef.current = false;
+      touchStartPosRef.current = null;
+      return;
+    }
+
     if (longPressTimerRef.current) {
       clearTimeout(longPressTimerRef.current);
       longPressTimerRef.current = null;
     }
 
-    // If long press was triggered, don't handle as click
-    if (longPressTriggeredRef.current) {
+    // If long press or drag/scroll was triggered, don't handle as click.
+    if (longPressTriggeredRef.current || pressMovedRef.current) {
       longPressTriggeredRef.current = false;
+      pressMovedRef.current = false;
+      touchStartPosRef.current = null;
       return;
     }
+
+    touchStartPosRef.current = null;
 
     // Short click
     if (selectMode) {
@@ -238,8 +280,9 @@ export default function Dashboard({
         onAttach(session, localHost);
       } else if (session.status === 'disconnected') {
         // Disconnected: server has no knowledge of this session.
-        // Re-create it with the same commandId and cwd.
-        // If we have an agentSessionId, pass it as resumeFrom to auto-resume the agent.
+        // Remove the stale local record first so reconnect doesn't
+        // produce a duplicate card alongside the new one.
+        db.sessions.delete(session.id).catch(() => {});
         onCreateSession({
           commandId: session.commandId,
           cwd: session.cwd,

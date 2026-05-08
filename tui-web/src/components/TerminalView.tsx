@@ -23,6 +23,10 @@ export default function TerminalView({ session, host, onBack, onSessionUpdate }:
   const [fontSize, setFontSize] = useState(14);
   const [showKillConfirm, setShowKillConfirm] = useState(false);
   const [restarting, setRestarting] = useState(false);
+  const [visualViewportHeight, setVisualViewportHeight] = useState<number | null>(() => {
+    if (typeof window === 'undefined') return null;
+    return window.visualViewport?.height ?? window.innerHeight;
+  });
   const fitTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const currentSessionIdRef = useRef(session.id);
   const attachedSessionIdRef = useRef(session.id);
@@ -59,6 +63,27 @@ export default function TerminalView({ session, host, onBack, onSessionUpdate }:
     if (fitTimeoutRef.current) clearTimeout(fitTimeoutRef.current);
     fitTimeoutRef.current = setTimeout(fitAndResize, delay);
   }, [fitAndResize]);
+
+  // Chrome Android does not always resize the layout viewport when the soft
+  // keyboard opens. The visual viewport does shrink, so pin the terminal layout
+  // to that height; otherwise the keyboard covers the bottom half of xterm.
+  useEffect(() => {
+    const updateVisualViewportHeight = () => {
+      setVisualViewportHeight(window.visualViewport?.height ?? window.innerHeight);
+      scheduleFitAndResize(50);
+    };
+
+    updateVisualViewportHeight();
+    window.visualViewport?.addEventListener('resize', updateVisualViewportHeight);
+    window.visualViewport?.addEventListener('scroll', updateVisualViewportHeight);
+    window.addEventListener('resize', updateVisualViewportHeight);
+
+    return () => {
+      window.visualViewport?.removeEventListener('resize', updateVisualViewportHeight);
+      window.visualViewport?.removeEventListener('scroll', updateVisualViewportHeight);
+      window.removeEventListener('resize', updateVisualViewportHeight);
+    };
+  }, [scheduleFitAndResize]);
 
   useEffect(() => {
     const previousSessionId = attachedSessionIdRef.current;
@@ -303,7 +328,7 @@ export default function TerminalView({ session, host, onBack, onSessionUpdate }:
   const isStopped = currentSession.status === 'stopped' || currentSession.status === 'crashed';
 
   return (
-    <div className="app-layout">
+    <div className="app-layout" style={visualViewportHeight ? { height: visualViewportHeight } : undefined}>
       {/* Terminal header */}
       <div className="terminal-header">
         <div className="header-left">

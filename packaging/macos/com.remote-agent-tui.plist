@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.remote-agent-tui</string>
+  <key>WorkingDirectory</key>
+  <string>/usr/local/opt/remote-agent-tui/server</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/local/opt/remote-agent-tui/node/bin/node</string>
+    <string>dist/index.js</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>AUTH_TOKEN</key>
+    <string></string>
+    <key>PORT</key>
+    <string>5555</string>
+    <key>NODE_ENV</key>
+    <string>production</string>
+    <key>REMOTE_AGENT_TUI_CONFIG</key>
+    <string>/usr/local/etc/remote-agent-tui/default-config.json</string>
+    <key>REMOTE_AGENT_TUI_DATA_DIR</key>
+    <string>/usr/local/var/lib/remote-agent-tui</string>
+    <key>REMOTE_AGENT_TUI_WEB_DIR</key>
+    <string>/usr/local/opt/remote-agent-tui/web</string>
+  </dict>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>/usr/local/var/log/remote-agent-tui.log</string>
+  <key>StandardErrorPath</key>
+  <string>/usr/local/var/log/remote-agent-tui.err</string>
+</dict>
+</plist>

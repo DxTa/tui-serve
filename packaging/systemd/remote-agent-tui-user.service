@@ -1,0 +1,28 @@
+[Unit]
+Description=Remote Agent TUI Manager (user)
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/.local/share/remote-agent-tui/server
+
+# Uses bundled Node.js installed by install-user-service.sh
+ExecStart=%h/.local/share/remote-agent-tui/node/bin/node dist/index.js
+
+Restart=on-failure
+RestartSec=5
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+EnvironmentFile=-%h/.config/remote-agent-tui/env
+Environment=NODE_ENV=production
+Environment=REMOTE_AGENT_TUI_CONFIG=%h/.config/remote-agent-tui/default-config.json
+Environment=REMOTE_AGENT_TUI_DATA_DIR=%h/.local/share/remote-agent-tui/data
+Environment=REMOTE_AGENT_TUI_WEB_DIR=%h/.local/share/remote-agent-tui/web
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=remote-agent-tui
+
+[Install]
+WantedBy=default.target

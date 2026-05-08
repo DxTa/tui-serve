@@ -1,0 +1,27 @@
+#!/bin/sh
+# prerm: pre-remove script for remote-agent-tui
+# Follows dh_installsystemd canonical patterns (Debian Policy §9.3)
+set -e
+
+case "$1" in
+  remove|upgrade|deconfigure)
+    # Stop the service before removal/upgrade
+    if [ -z "${DPKG_ROOT:-}" ] && [ -d /run/systemd/system ]; then
+      if command -v deb-systemd-invoke >/dev/null 2>&1; then
+        deb-systemd-invoke stop remote-agent-tui >/dev/null 2>&1 || true
+      else
+        systemctl stop remote-agent-tui >/dev/null 2>&1 || true
+      fi
+    fi
+    ;;
+
+  failed-upgrade)
+    # Don't stop on failed upgrade
+    ;;
+
+  *)
+    echo "prerm called with unknown argument \`$1'" >&2
+    ;;
+esac
+
+exit 0

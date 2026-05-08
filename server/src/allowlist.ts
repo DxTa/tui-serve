@@ -4,17 +4,19 @@
 import { config, type CommandAllowlistEntry } from './config.js';
 
 const SESSION_ID_REGEX = /^[a-z0-9][a-z0-9-]{0,63}$/;
+const UNSUPPORTED_COMMAND_IDS = new Set(['shell']);
 
 export function validateSessionId(id: string): boolean {
   return SESSION_ID_REGEX.test(id);
 }
 
 export function getCommandEntry(commandId: string): CommandAllowlistEntry | null {
+  if (UNSUPPORTED_COMMAND_IDS.has(commandId)) return null;
   return config.commands.find((c) => c.id === commandId) ?? null;
 }
 
 export function validateCommandId(commandId: string): boolean {
-  return config.commands.some((c) => c.id === commandId);
+  return !UNSUPPORTED_COMMAND_IDS.has(commandId) && config.commands.some((c) => c.id === commandId);
 }
 
 export function resolveCommand(commandId: string): string | null {
@@ -56,11 +58,11 @@ function resolveCwd(path: string): string {
 }
 
 export function getAllCommandIds(): string[] {
-  return config.commands.map((c) => c.id);
+  return config.commands.filter((c) => !UNSUPPORTED_COMMAND_IDS.has(c.id)).map((c) => c.id);
 }
 
 export function getCommandLabels(): Array<{ id: string; label: string; requiresConfirmation: boolean; allowedCwdRoots: string[] }> {
-  return config.commands.map((c) => ({
+  return config.commands.filter((c) => !UNSUPPORTED_COMMAND_IDS.has(c.id)).map((c) => ({
     id: c.id,
     label: c.label,
     requiresConfirmation: c.requiresConfirmation ?? false,

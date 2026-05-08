@@ -1,6 +1,6 @@
 // Type definitions for the frontend
 
-export type SessionStatus = 'starting' | 'running' | 'stopped' | 'crashed' | 'killed' | 'unknown';
+export type SessionStatus = 'starting' | 'running' | 'stopped' | 'crashed' | 'killed' | 'unknown' | 'disconnected';
 export type ConnectionState = 'connected' | 'reconnecting' | 'disconnected';
 
 export interface Session {
@@ -17,6 +17,11 @@ export interface Session {
   attachedClients: number;
   restartPolicy: 'manual' | 'on-crash';
   env: string;
+  agentType: string;
+  agentSessionId: string | null;
+  crashCount: number;
+  lastCrashAt: string | null;
+  lastExitCode: number | null;
   createdAt: string;
   updatedAt: string;
   lastAttachedAt: string | null;
@@ -41,4 +46,5 @@ export interface HealthStatus {
   tmux: boolean;
   uptime: number;
   version: string;
+  authRequired: boolean;
 }

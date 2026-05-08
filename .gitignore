@@ -1,4 +1,5 @@
 # Dependencies
+node_modules/
 server/node_modules/
 tui-web/node_modules/
 

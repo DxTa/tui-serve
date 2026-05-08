@@ -1,0 +1,23 @@
+Source: remote-agent-tui
+Section: web
+Priority: optional
+Maintainer: Remote Agent TUI <noreply@example.com>
+Build-Depends: debhelper (>= 12), build-essential, python3, make, g++ (>= 10)
+Standards-Version: 4.5.1
+Homepage: https://github.com/example/remote-agent-tui
+
+Package: remote-agent-tui
+Architecture: amd64
+Depends: tmux (>= 3.0), libc6 (>= 2.31), libstdc++6 (>= 10)
+Recommends: caddy
+Suggests: tailscale
+Description: Remote Agent TUI Manager
+ Browser-based terminal manager for long-running coding agent sessions
+ (Claude, Codex, Pi, etc.) on Raspberry Pis and Linux machines.
+ .
+ Bundles Node.js 22 LTS — no external Node.js install needed.
+ Features persistent tmux sessions, mobile PWA, REST + WebSocket API,
+ command allowlist security, and systemd auto-start.
+ .
+ Requires glibc >= 2.31 (Ubuntu 20.04+, Debian 11+) and libstdc++ >= 10.
+ Native modules (better-sqlite3, node-pty) are compiled for amd64 only.

@@ -304,16 +304,37 @@ For safer production updates, install each version into `/opt/remote-agent-tui/r
 - tmux (`sudo apt install -y tmux`)
 - build-essential, python3, make, g++ (for native modules: `sudo apt install -y build-essential python3 make g++`)
 
-### Install & Run
+### Quick Start (Development, unified)
+
+From `remote-agent-tui/` root:
 
 ```bash
-# Backend — Terminal 1
-cd remote-agent-tui/server
-cp .env.example .env                  # Set AUTH_TOKEN in .env
-npm install
-PORT=3100 npm run dev                 # Vite dev proxy currently targets 3100
+# One-time setup
+cd remote-agent-tui
+npm install            # installs concurrently at root
 
-# Frontend — Terminal 2
+cd server
+npm install
+cp .env.example .env  # Set AUTH_TOKEN in .env
+
+cd ../tui-web
+npm install
+
+# Start both server + frontend (server on :3100, Vite on :5173)
+cd ..
+npm run dev
+```
+
+### Or start individually
+
+```bash
+# Backend — Terminal 1 (defaults to PORT=3100 for dev)
+cd remote-agent-tui/server
+cp .env.example .env                        # Set AUTH_TOKEN in .env
+npm install
+npm run dev
+
+# Frontend — Terminal 2 (Vite dev server, auto-increments port if busy)
 cd remote-agent-tui/tui-web
 npm install
 npm run dev
@@ -321,12 +342,25 @@ npm run dev
 
 Open **http://localhost:5173**, enter your auth token, create a session, and attach.
 
+### Dev port configuration
+
+| Component | Default Port | Env Var | Notes |
+|---|---|---|---|
+| Backend (dev) | `3100` | `PORT` | `npm run dev` in server sets `PORT=3100` |
+| Frontend (dev) | `5173` | `VITE_DEV_PORT` | Vite auto-increments if busy |
+| Frontend proxy target | `3100` | `VITE_API_PORT` | Must match backend PORT |
+| Frontend proxy host | `127.0.0.1` | `VITE_API_HOST` | Change if backend on different host |
+| Production | `5555` | `PORT` | Single port serves API + static frontend |
+
 ### Configuration
 
 | Variable | Default | Description |
 |---|---|---|
 | `AUTH_TOKEN` | `dev-token-change-me` | Required auth token for all API and WebSocket calls |
-| `PORT` | `5555` | Server listen port. Use `3100` for current Vite dev proxy. |
+| `PORT` | `5555` | Server listen port. Dev script (`npm run dev`) defaults to `3100` |
+| `VITE_DEV_PORT` | `5173` | Vite dev server port (auto-increments if busy) |
+| `VITE_API_PORT` | `3100` | Vite proxy target port (must match backend `PORT`) |
+| `VITE_API_HOST` | `127.0.0.1` | Vite proxy target host |
 
 **Command allowlist** — Edit `server/default-config.json` to add/remove agent types:
 

@@ -1,18 +1,19 @@
 // Main entry point — Fastify server + WebSocket + REST API
 
 import Fastify from 'fastify';
-import { readFileSync, existsSync, mkdirSync } from 'fs';
+import { existsSync, mkdirSync } from 'fs';
 import { resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { execSync } from 'child_process';
 import { config } from './config.js';
 import { authMiddleware } from './auth.js';
-import { initDb, listSessions, getSession, updateSession, deleteSession, closeDb } from './db.js';
 import * as sessionManager from './sessions.js';
-import { setupWebSocket, broadcastSessionUpdateExternal } from './ws.js';
+import { setupWebSocket, broadcastSessionUpdateExternal, broadcastSessionObjectExternal } from './ws.js';
 import { getCommandLabels } from './allowlist.js';
 import { startHealthCheck, stopHealthCheck, reconcileOnStartup } from './sessions.js';
+import { logEvent, setLogEnabled } from './eventLog.js';
 import { z } from 'zod';
+import type { Session } from './SessionStore.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -46,7 +47,7 @@ server.get('/api/health', async () => {
   } catch {
     tmuxAvailable = false;
   }
-  return { status: 'ok', tmux: tmuxAvailable, uptime: process.uptime(), version: '0.1.0' };
+  return { status: 'ok', tmux: tmuxAvailable, uptime: process.uptime(), version: '0.2.0', authRequired: config.authRequired };
 });
 
 // List sessions
@@ -57,7 +58,7 @@ server.get('/api/sessions', async () => {
 // Get session
 server.get('/api/sessions/:sessionId', async (req, reply) => {
   const { sessionId } = req.params as { sessionId: string };
-  const session = getSession(sessionId);
+  const session = sessionManager.getSession(sessionId);
   if (!session) {
     reply.code(404).send({ error: 'SESSION_NOT_FOUND', message: `Session not found: ${sessionId}` });
     return;
@@ -71,6 +72,7 @@ const createSessionSchema = z.object({
   title: z.string().max(100).optional(),
   commandId: z.string().min(1),
   cwd: z.string().min(1),
+  resumeFrom: z.string().optional(), // agentSessionId to resume from
 });
 
 server.post('/api/sessions', async (req, reply) => {
@@ -96,18 +98,18 @@ server.patch('/api/sessions/:sessionId', async (req, reply) => {
   const { sessionId } = req.params as { sessionId: string };
   const body = req.body as { title?: string; restartPolicy?: string };
 
-  const existing = getSession(sessionId);
+  const existing = sessionManager.getSession(sessionId);
   if (!existing) {
     reply.code(404).send({ error: 'SESSION_NOT_FOUND', message: `Session not found: ${sessionId}` });
     return;
   }
 
-  updateSession(sessionId, {
+  const result = sessionManager.updateSession(sessionId, {
     title: body.title,
     restartPolicy: body.restartPolicy as any,
   });
 
-  return getSession(sessionId);
+  return result;
 });
 
 // Kill session
@@ -122,10 +124,11 @@ server.post('/api/sessions/:sessionId/kill', async (req, reply) => {
     return;
   }
 
+  broadcastSessionObjectExternal(result as any as Session);
   return result;
 });
 
-// Restart session
+// Restart session (clean restart — creates a new agent process)
 server.post('/api/sessions/:sessionId/restart', async (req, reply) => {
   const { sessionId } = req.params as { sessionId: string };
 
@@ -136,6 +139,24 @@ server.post('/api/sessions/:sessionId/restart', async (req, reply) => {
     return;
   }
 
+  broadcastSessionUpdateExternal(sessionId);
+  return result;
+});
+
+// Resume agent session (resume using agent's native --resume flag)
+server.post('/api/sessions/:sessionId/resume', async (req, reply) => {
+  const { sessionId } = req.params as { sessionId: string };
+
+  const result = sessionManager.resumeAgentSession(sessionId);
+  if ('error' in result) {
+    const status = result.error === 'SESSION_ALREADY_RUNNING' ? 409
+      : result.error === 'RATE_LIMITED' ? 429
+      : 400;
+    reply.code(status).send(result);
+    return;
+  }
+
+  broadcastSessionUpdateExternal(sessionId);
   return result;
 });
 
@@ -157,7 +178,8 @@ server.get('/api/commands', async () => {
 });
 
 // ── Serve static files (production) ──
-const webDistPath = resolve(__dirname, '..', '..', 'web', 'dist');
+// REMOTE_AGENT_TUI_WEB_DIR overrides the web assets directory (for packaged installs)
+const webDistPath = process.env.REMOTE_AGENT_TUI_WEB_DIR || resolve(__dirname, '..', '..', 'web', 'dist');
 if (existsSync(webDistPath)) {
   logger.info('Serving static files from', { path: webDistPath });
   try {
@@ -166,6 +188,21 @@ if (existsSync(webDistPath)) {
       root: webDistPath,
       prefix: '/',
       wildcard: false,
+      setHeaders(res: any, filePath: string) {
+        // Avoid stale PWA/app-shell assets after .deb upgrades. Hashed JS/CSS
+        // can still be cached by browser defaults, but index.html and service
+        // worker files must revalidate so clients pick up new bundles.
+        if (
+          filePath.endsWith('index.html') ||
+          filePath.endsWith('sw.js') ||
+          filePath.endsWith('manifest.webmanifest') ||
+          /workbox-.*\.js$/.test(filePath)
+        ) {
+          res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+          res.setHeader('Pragma', 'no-cache');
+          res.setHeader('Expires', '0');
+        }
+      },
     });
   } catch {
     logger.warn('@fastify/static not available, static serving disabled');
@@ -176,9 +213,9 @@ if (existsSync(webDistPath)) {
 async function start() {
   logger.info('Starting Remote Agent TUI Manager', { port: config.port, env: process.env.NODE_ENV });
 
-  // Initialize database
-  initDb();
-  logger.info('Database initialized');
+  // Initialize event log
+  setLogEnabled(true);
+  logger.info('Event log initialized');
 
   // Reconcile sessions with tmux
   reconcileOnStartup();
@@ -203,7 +240,6 @@ async function start() {
 async function shutdown(signal: string) {
   logger.info('Shutting down', { signal });
   stopHealthCheck();
-  closeDb();
   await server.close();
   process.exit(0);
 }

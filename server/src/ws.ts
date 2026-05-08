@@ -6,7 +6,7 @@ import { WebSocketServer } from 'ws';
 import type { FastifyInstance } from 'fastify';
 import { authenticateWs } from './auth.js';
 import * as sessionManager from './sessions.js';
-import * as db from './db.js';
+import { getStore } from './sessions.js';
 import * as tmux from './tmux.js';
 import { createPtyBridge, registerBridge, unregisterBridge, type IPtyProcess } from './ptyBridge.js';
 import {
@@ -20,6 +20,9 @@ import {
   type ClientMessage,
   type ServerMessage,
 } from './protocol.js';
+import { logEvent } from './eventLog.js';
+import type { Session } from './SessionStore.js';
+
 // Local logger to avoid circular dependency
 const logger = {
   info(msg: string, data?: Record<string, unknown>) {
@@ -58,13 +61,12 @@ export function setupWebSocket(server: FastifyInstance): WebSocketServer {
 
     // Extract auth token from query string or first message
     const url = new URL(req.url || '/', `http://${req.headers.host}`);
-    const token = url.searchParams.get('token');
-    if (token && authenticateWs(token)) {
+    const token = url.searchParams.get('token') || undefined;
+    if (authenticateWs(token)) {
       client.authenticated = true;
     }
 
     if (!client.authenticated) {
-      // Will wait for first message to authenticate
       logger.info('ws.client.connected', { auth: 'pending' });
     } else {
       logger.info('ws.client.connected', { auth: 'ok' });
@@ -77,7 +79,6 @@ export function setupWebSocket(server: FastifyInstance): WebSocketServer {
       if (!parsed) return;
 
       if (parsed.type === 'binary') {
-        // Binary input from client → forward to PTY
         if (!client.authenticated) {
           sendError(ws, ErrorCode.AUTH_REQUIRED, 'Authentication required');
           return;
@@ -88,7 +89,6 @@ export function setupWebSocket(server: FastifyInstance): WebSocketServer {
         return;
       }
 
-      // JSON control message
       const msg = parsed.message as ClientMessage;
 
       // First message may be auth
@@ -125,7 +125,7 @@ export function setupWebSocket(server: FastifyInstance): WebSocketServer {
     });
   });
 
-  // Heartbeat: check every 60s, close connections with no activity for >70s
+  // Heartbeat
   const heartbeatInterval = setInterval(() => {
     const now = Date.now();
     for (const [ws, client] of clients) {
@@ -133,7 +133,6 @@ export function setupWebSocket(server: FastifyInstance): WebSocketServer {
         logger.info('ws.heartbeat.timeout', { sessionId: client.sessionId });
         ws.close(4002, 'Heartbeat timeout');
       } else if (now - client.lastActivity > 60000) {
-        // Send ping
         sendControl(ws, { v: PROTOCOL_VERSION, type: 'ping' });
       }
     }
@@ -185,7 +184,7 @@ function handleAttach(ws: WebSocket, client: ClientState, sessionId: string, req
     cleanupPty(client);
   }
 
-  const session = db.getSession(sessionId);
+  const session = sessionManager.getSession(sessionId);
   if (!session) {
     sendError(ws, ErrorCode.SESSION_NOT_FOUND, `Session not found: ${sessionId}`, requestId);
     return;
@@ -240,8 +239,10 @@ function handleAttach(ws: WebSocket, client: ClientState, sessionId: string, req
   });
 
   // Update attached clients count
-  const currentCount = db.getSession(sessionId)?.attachedClients ?? 0;
-  db.updateSession(sessionId, { attachedClients: currentCount + 1, lastAttachedAt: new Date().toISOString() });
+  const store = getStore();
+  const currentCount = store.getSession(sessionId)?.attachedClients ?? 0;
+  store.updateSession(sessionId, { attachedClients: currentCount + 1, lastAttachedAt: new Date().toISOString() });
+  logEvent(sessionId, 'attached', { clientCount: currentCount + 1 });
 
   // Broadcast session update
   broadcastSessionUpdate(sessionId);
@@ -259,8 +260,7 @@ function handleResize(client: ClientState, sessionId: string, cols: number, rows
   if (client.pty && client.sessionId === sessionId) {
     client.pty.resize(cols, rows);
   }
-  // Also resize the tmux window
-  const session = db.getSession(sessionId);
+  const session = sessionManager.getSession(sessionId);
   if (session) {
     tmux.resizeWindow(session.tmuxSessionName, cols, rows);
   }
@@ -270,12 +270,13 @@ function handleDetach(ws: WebSocket, client: ClientState, sessionId: string, req
   cleanupPty(client);
   sendControl(ws, { v: PROTOCOL_VERSION, type: 'detach_ack', sessionId, requestId });
 
-  // Update attached clients count
-  const session = db.getSession(sessionId);
+  const session = sessionManager.getSession(sessionId);
   if (session) {
     const newCount = Math.max(0, session.attachedClients - 1);
-    db.updateSession(sessionId, { attachedClients: newCount });
+    const store = getStore();
+    store.updateSession(sessionId, { attachedClients: newCount });
     broadcastSessionUpdate(sessionId);
+    logEvent(sessionId, 'detached', { clientCount: newCount });
   }
 
   logger.info('ws.client.detached', { sessionId });
@@ -324,7 +325,7 @@ function cleanupPty(client: ClientState): void {
   if (client.pty) {
     try { client.pty.kill(); } catch {}
     if (client.sessionId) {
-      const session = db.getSession(client.sessionId);
+      const session = sessionManager.getSession(client.sessionId);
       if (session) {
         unregisterBridge(session.tmuxSessionName, client.pty);
       }
@@ -337,10 +338,11 @@ function cleanupPty(client: ClientState): void {
 function cleanupClient(client: ClientState): void {
   cleanupPty(client);
   if (client.sessionId) {
-    const session = db.getSession(client.sessionId);
+    const session = sessionManager.getSession(client.sessionId);
     if (session) {
       const newCount = Math.max(0, session.attachedClients - 1);
-      db.updateSession(client.sessionId, { attachedClients: newCount });
+      const store = getStore();
+      store.updateSession(client.sessionId, { attachedClients: newCount });
       broadcastSessionUpdate(client.sessionId);
     }
   }
@@ -357,13 +359,17 @@ function sendError(ws: WebSocket, code: ErrorCode, message: string, requestId?: 
 }
 
 function broadcastSessionUpdate(sessionId: string): void {
-  const session = db.getSession(sessionId);
+  const session = sessionManager.getSession(sessionId);
   if (!session) return;
 
+  broadcastSessionObject(session);
+}
+
+function broadcastSessionObject(session: Session): void {
   const msg: ServerMessage = {
     v: PROTOCOL_VERSION,
     type: 'session_update',
-    sessionId,
+    sessionId: session.id,
     ...session,
   } as any;
 
@@ -377,4 +383,9 @@ function broadcastSessionUpdate(sessionId: string): void {
 // Export for broadcast from REST API
 export function broadcastSessionUpdateExternal(sessionId: string): void {
   broadcastSessionUpdate(sessionId);
+}
+
+// Broadcast a session object directly (useful when session has been killed)
+export function broadcastSessionObjectExternal(session: Session): void {
+  broadcastSessionObject(session);
 }

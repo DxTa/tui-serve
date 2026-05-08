@@ -40,7 +40,14 @@ export interface CreateSessionInput {
   env?: Record<string, string>;
 }
 
-const DB_PATH = resolve(__dirname, '..', 'data', 'sessions.db');
+/** Default data directory — can be overridden via REMOTE_AGENT_TUI_DATA_DIR env var (for packaged installs) */
+const DEFAULT_DATA_DIR = resolve(__dirname, '..', 'data');
+
+function getDataDir(): string {
+  return process.env.REMOTE_AGENT_TUI_DATA_DIR || DEFAULT_DATA_DIR;
+}
+
+const DB_PATH = resolve(getDataDir(), 'sessions.db');
 
 let db: Database.Database;
 
@@ -173,6 +180,11 @@ export function updateSession(id: string, updates: Partial<Pick<Session, 'title'
 export function deleteSession(id: string): boolean {
   const result = getDb().prepare('DELETE FROM sessions WHERE id = ?').run(id);
   return result.changes > 0;
+}
+
+export function deleteSessionsByStatus(status: SessionStatus): number {
+  const result = getDb().prepare('DELETE FROM sessions WHERE status = ?').run(status);
+  return result.changes;
 }
 
 export function closeDb(): void {

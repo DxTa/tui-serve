@@ -93,63 +93,186 @@ const styles = `
     padding: 16px;
   }
 
-  /* Session cards */
+  /* Session tile grid (card UI) */
   .session-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+    grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
     gap: 12px;
   }
 
-  .session-card {
+  .session-tile {
+    position: relative;
     background: #1e293b;
     border: 1px solid #334155;
-    border-radius: 8px;
+    border-radius: 12px;
     padding: 16px;
-    cursor: default;
-    transition: border-color 0.2s;
+    display: flex;
+    gap: 12px;
+    align-items: flex-start;
+    transition: all 0.2s ease;
+    user-select: none;
+    -webkit-user-select: none;
+    -webkit-touch-callout: none;
   }
 
-  .session-card:hover {
+  .session-tile-attachable {
+    cursor: pointer;
+  }
+
+  .session-tile-attachable:hover {
+    border-color: #3b82f6;
+    background: #1e2940;
+    transform: translateY(-1px);
+    box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+  }
+
+  .session-tile-attachable:active {
+    transform: translateY(0);
+    box-shadow: none;
+  }
+
+  .session-tile-actionable {
+    cursor: pointer;
     border-color: #475569;
   }
 
-  .session-card-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    margin-bottom: 8px;
-    gap: 8px;
+  .session-tile-actionable:hover {
+    border-color: #8b5cf6;
+    background: #1e2940;
+    transform: translateY(-1px);
+    box-shadow: 0 4px 12px rgba(0,0,0,0.3);
   }
 
-  .agent-badge {
+  .session-tile-actionable:active {
+    transform: translateY(0);
+    box-shadow: none;
+  }
+
+  .session-tile-selectable {
+    cursor: pointer;
+  }
+
+  .session-tile-selectable:hover {
+    border-color: #475569;
+  }
+
+  .session-tile-selected {
+    border-color: #3b82f6 !important;
+    background: rgba(59,130,246,0.08) !important;
+    box-shadow: 0 0 0 1px #3b82f6;
+  }
+
+  /* Checkbox indicator */
+  .tile-checkbox {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    width: 22px;
+    height: 22px;
+    border-radius: 6px;
+    border: 2px solid #475569;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 13px;
+    font-weight: 700;
+    color: #fff;
+    transition: all 0.15s ease;
+  }
+
+  .tile-checkbox-checked {
+    background: #3b82f6;
+    border-color: #3b82f6;
+  }
+
+  /* Tile icon */
+  .tile-icon {
+    width: 44px;
+    height: 44px;
+    border-radius: 10px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+  }
+
+  /* Tile body */
+  .tile-body {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .tile-title {
+    font-size: 15px;
+    font-weight: 600;
+    color: #f1f5f9;
+    margin-bottom: 6px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    padding-right: 24px;
+  }
+
+  .tile-tags {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+    margin-bottom: 6px;
+  }
+
+  .tile-tag {
     font-size: 11px;
     font-weight: 600;
     padding: 2px 8px;
     border-radius: 10px;
     text-transform: lowercase;
     white-space: nowrap;
-    flex-shrink: 0;
   }
 
-  .session-title {
-    font-size: 15px;
-    font-weight: 600;
-    color: #f1f5f9;
+  .tile-meta {
+    font-size: 11px;
+    color: #64748b;
+  }
+
+  /* Bottom selection bar */
+  .selection-bar {
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    background: #1e293b;
+    border-top: 1px solid #334155;
+    padding: 12px 16px;
     display: flex;
     align-items: center;
-    gap: 8px;
+    justify-content: space-between;
+    z-index: 90;
+    box-shadow: 0 -4px 16px rgba(0,0,0,0.4);
+    animation: slideUp 0.2s ease;
   }
 
-  .session-meta {
-    font-size: 12px;
-    color: #94a3b8;
-    margin-bottom: 8px;
+  @keyframes slideUp {
+    from { transform: translateY(100%); opacity: 0; }
+    to { transform: translateY(0); opacity: 1; }
   }
 
-  .session-actions {
+  .selection-bar-info {
+    font-size: 14px;
+    font-weight: 500;
+    color: #f1f5f9;
+  }
+
+  .selection-bar-actions {
     display: flex;
     gap: 8px;
-    flex-wrap: wrap;
+  }
+
+  /* Keep backwards compatibility for any remaining references */
+  .session-card-header,
+  .agent-badge,
+  .session-title,
+  .session-actions {
+    display: none;
   }
 
   /* Status badges */
@@ -453,6 +576,13 @@ const styles = `
     }
     .main-content {
       padding: 12px;
+    }
+    .tile-icon {
+      width: 36px;
+      height: 36px;
+    }
+    .tile-icon span {
+      font-size: 18px !important;
     }
   }
 `;

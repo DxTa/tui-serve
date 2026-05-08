@@ -1,0 +1,150 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  # ── Build .deb for Linux amd64 ──────────────────────────────
+  build-deb:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: |
+            server/package-lock.json
+            tui-web/package-lock.json
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y dpkg-dev fakeroot libsqlite3-dev
+
+      - name: Get version from tag
+        id: version
+        run: echo "VERSION=${GITHUB_REF_NAME#v}" >> $GITHUB_OUTPUT
+
+      - name: Build .deb package
+        run: |
+          chmod +x packaging/build-deb.sh
+          ./packaging/build-deb.sh ${{ steps.version.outputs.VERSION }} amd64
+        env:
+          NODE_VERSION: '22.15.0'
+
+      - name: Upload .deb artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: remote-agent-tui-${{ steps.version.outputs.VERSION }}-amd64-deb
+          path: packaging/dist/*.deb
+          if-no-files-found: error
+
+  # ── Build macOS arm64 bundle ─────────────────────────────────
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: |
+            server/package-lock.json
+            tui-web/package-lock.json
+
+      - name: Install tmux
+        run: brew install tmux
+
+      - name: Get version from tag
+        id: version
+        run: echo "VERSION=${GITHUB_REF_NAME#v}" >> $GITHUB_OUTPUT
+
+      - name: Build macOS bundle
+        run: |
+          chmod +x packaging/build-macos.sh
+          ./packaging/build-macos.sh ${{ steps.version.outputs.VERSION }}
+        env:
+          NODE_VERSION: '22.15.0'
+
+      - name: Upload macOS artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: remote-agent-tui-${{ steps.version.outputs.VERSION }}-macos-arm64
+          path: packaging/dist/*.tar.gz
+          if-no-files-found: error
+
+  # ── Create GitHub Release ─────────────────────────────────────
+  release:
+    needs: [build-deb, build-macos]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Get version from tag
+        id: version
+        run: echo "VERSION=${GITHUB_REF_NAME#v}" >> $GITHUB_OUTPUT
+
+      - name: Download .deb artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: remote-agent-tui-${{ steps.version.outputs.VERSION }}-amd64-deb
+          path: release-artifacts/
+
+      - name: Download macOS artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: remote-agent-tui-${{ steps.version.outputs.VERSION }}-macos-arm64
+          path: release-artifacts/
+
+      - name: List release artifacts
+        run: ls -lh release-artifacts/
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: Release ${{ github.ref_name }}
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-rc') || contains(github.ref_name, '-beta') || contains(github.ref_name, '-alpha') }}
+          generate_release_notes: true
+          files: release-artifacts/*
+          body: |
+            ## Remote Agent TUI ${{ github.ref_name }}
+
+            ### Downloads
+
+            | Platform | File | Install |
+            |---|---|---|
+            | Linux (amd64) | `.deb` | `sudo dpkg -i *.deb && sudo apt-get install -f` |
+            | macOS (arm64) | `.tar.gz` | See included `install-macos.sh` |
+
+            ### Quick Start (Linux)
+
+            ```bash
+            sudo dpkg -i remote-agent-tui_*_amd64.deb
+            sudo apt-get install -f   # resolve deps (tmux, libc)
+            # Service starts automatically on port 5555
+            # No auth required by default — set AUTH_TOKEN to enable
+            ```
+
+            ### Quick Start (macOS)
+
+            ```bash
+            tar xzf remote-agent-tui_*-macos-arm64.tar.gz
+            cd remote-agent-tui-*/
+            ./deploy/scripts/install-macos.sh
+            ```
+
+            ### What's Changed
+
+            See generated notes below for commit history.

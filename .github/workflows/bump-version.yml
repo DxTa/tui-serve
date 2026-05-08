@@ -1,0 +1,77 @@
+name: Bump Version
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump_type:
+        description: "Version bump type"
+        required: true
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+
+permissions:
+  contents: write
+
+concurrency:
+  group: version-bump
+  cancel-in-progress: false
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: |
+            server/package-lock.json
+            tui-web/package-lock.json
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Bump server version
+        id: bump
+        working-directory: server
+        run: |
+          npm version ${{ inputs.bump_type }} --no-git-tag-version
+          echo "version=$(node -p 'require("./package.json").version')" >> "$GITHUB_OUTPUT"
+
+      - name: Sync tui-web version
+        working-directory: tui-web
+        run: |
+          npm version ${{ steps.bump.outputs.version }} --no-git-tag-version
+
+      - name: Validate version sync
+        run: |
+          SERVER_V=$(node -p "require('./server/package.json').version")
+          TUI_V=$(node -p "require('./tui-web/package.json').version")
+          if [ "$SERVER_V" != "$TUI_V" ]; then
+            echo "::error::Version mismatch: server=$SERVER_V tui-web=$TUI_V"
+            exit 1
+          fi
+          echo "✅ Versions synced: v$SERVER_V"
+
+      - name: Commit version bump
+        run: |
+          git add server/package.json server/package-lock.json tui-web/package.json tui-web/package-lock.json
+          git commit -m "chore(release): v${{ steps.bump.outputs.version }}"
+
+      - name: Create and push tag
+        run: |
+          git tag -a "v${{ steps.bump.outputs.version }}" -m "v${{ steps.bump.outputs.version }}"
+          git push origin HEAD:refs/heads/main
+          git push origin "v${{ steps.bump.outputs.version }}"

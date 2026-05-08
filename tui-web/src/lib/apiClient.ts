@@ -11,6 +11,7 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
     'Content-Type': 'application/json',
     ...(options?.headers as Record<string, string>),
   };
+  // Only send auth header if a token is stored
   if (token) headers['Authorization'] = `Bearer ${token}`;
 
   const res = await fetch(`${BASE_URL}${path}`, { ...options, headers });
@@ -36,7 +37,7 @@ export const api = {
     return request(`/api/sessions/${id}`);
   },
 
-  createSession(opts: { id?: string; title?: string; commandId: string; cwd: string }): Promise<Session> {
+  createSession(opts: { id?: string; title?: string; commandId: string; cwd: string; resumeFrom?: string }): Promise<Session> {
     return request('/api/sessions', {
       method: 'POST',
       body: JSON.stringify(opts),
@@ -59,6 +60,12 @@ export const api = {
 
   restartSession(id: string): Promise<Session> {
     return request(`/api/sessions/${id}/restart`, {
+      method: 'POST',
+    });
+  },
+
+  resumeAgentSession(id: string): Promise<Session> {
+    return request(`/api/sessions/${id}/resume`, {
       method: 'POST',
     });
   },

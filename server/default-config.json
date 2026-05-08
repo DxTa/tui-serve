@@ -23,21 +23,9 @@
       "label": "Codex Coding Agent",
       "command": "codex",
       "allowedCwdRoots": ["/home/pi", "/tmp"]
-    },
-    {
-      "id": "shell",
-      "label": "Interactive Shell",
-      "command": "bash",
-      "allowedCwdRoots": ["/home/pi", "/tmp"],
-      "requiresConfirmation": true
     }
   ],
   "hosts": [
-    {
-      "id": "local",
-      "name": "This Machine",
-      "address": "localhost",
-      "port": 3000
-    }
+    { "id": "local", "name": "This Machine", "address": "localhost", "port": 5555 }
   ]
 }

@@ -3,8 +3,15 @@ import type { FastifyRequest, FastifyReply } from 'fastify';
 import { config } from './config.js';
 
 export async function authMiddleware(request: FastifyRequest, reply: FastifyReply) {
-  // Skip auth for health endpoint (optional, remove if you want auth there too)
+  // Skip auth for health endpoint
   if (request.url === '/api/health' && request.method === 'GET') {
+    return;
+  }
+
+  // If no auth token is configured, skip authentication entirely.
+  // This is intentional for trusted/private networks (Tailscale, LAN, localhost).
+  // Set AUTH_TOKEN in env to enforce authentication.
+  if (!config.authRequired) {
     return;
   }
 
@@ -23,6 +30,11 @@ export async function authMiddleware(request: FastifyRequest, reply: FastifyRepl
 
 // WebSocket auth — called on upgrade or first message
 export function authenticateWs(token: string | undefined): boolean {
+  // If no auth token is configured, accept all connections
+  if (!config.authRequired) {
+    return true;
+  }
+
   if (!token) return false;
   return token === config.authToken;
 }

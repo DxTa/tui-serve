@@ -1,6 +1,9 @@
 import { useState, useEffect, useCallback } from 'react';
 import { api } from './lib/apiClient';
-import { getAuthToken, setAuthToken, hasAuthToken } from './lib/auth';
+import { getAuthToken, setAuthToken, hasAuthToken, setAuthRequired, isAuthRequired } from './lib/auth';
+import { syncFromServer, requestPersistentStorage } from './lib/sync';
+import { db } from './lib/db';
+import { useLiveQuery } from 'dexie-react-hooks';
 import type { Session, Host } from './lib/types';
 import Dashboard from './components/Dashboard';
 import TerminalView from './components/TerminalView';
@@ -21,23 +24,55 @@ function setHash(hash: string) {
 }
 
 export default function App() {
-  const [authed, setAuthed] = useState(hasAuthToken());
+  const [authed, setAuthed] = useState(hasAuthToken() || !isAuthRequired());
   const [token, setToken] = useState(getAuthToken() || '');
   const [authError, setAuthError] = useState('');
   const [selectedSession, setSelectedSession] = useState<Session | null>(null);
   const [selectedHost, setSelectedHost] = useState<Host | null>(null);
-  const [sessions, setSessions] = useState<Session[]>([]);
   const [loading, setLoading] = useState(false);
+  const [checkingAuth, setCheckingAuth] = useState(true); // initial auth probe
+
+  // Use Dexie's useLiveQuery for reactive session list
+  const localSessions = useLiveQuery(() => db.sessions.orderBy('createdAt').reverse().toArray(), []) || [];
 
   // Derive view from URL hash
   const currentSessionId = getSessionIdFromHash();
   const view: 'dashboard' | 'terminal' = currentSessionId ? 'terminal' : 'dashboard';
 
+  // Request persistent storage on first load
+  useEffect(() => {
+    requestPersistentStorage();
+  }, []);
+
+  // Probe server to check if auth is required
+  useEffect(() => {
+    const probeAuth = async () => {
+      try {
+        const health = await api.health();
+        setAuthRequired(health.authRequired ?? false);
+        if (!health.authRequired) {
+          // No auth needed — go straight to dashboard
+          setAuthed(true);
+        } else if (hasAuthToken()) {
+          // Auth required but we have a stored token — try it
+          setAuthed(true);
+        }
+        // Otherwise: auth required, no token — show auth screen
+      } catch {
+        // Can't reach server — stay on auth screen as fallback
+      } finally {
+        setCheckingAuth(false);
+      }
+    };
+    probeAuth();
+  }, []);
+
   const loadSessions = useCallback(async () => {
     try {
       setLoading(true);
       const list = await api.listSessions();
-      setSessions(list);
+      // Sync server data into Dexie
+      await syncFromServer(list);
 
       // If we're on a terminal view and the session was killed/removed,
       // redirect back to dashboard
@@ -65,7 +100,7 @@ export default function App() {
     if (authed) loadSessions();
   }, [authed, loadSessions]);
 
-  // Auto-refresh sessions
+  // Auto-refresh sessions every 5 seconds
   useEffect(() => {
     if (!authed) return;
     const interval = setInterval(loadSessions, 5000);
@@ -79,8 +114,7 @@ export default function App() {
       try {
         const s = await api.getSession(currentSessionId);
         setSelectedSession(s);
-        // Use local host by default
-        setSelectedHost({ id: 'local', name: 'This Machine', address: 'localhost', port: window.location.port ? parseInt(window.location.port) : 3000 });
+        setSelectedHost({ id: 'local', name: 'This Machine', address: 'localhost', port: window.location.port ? parseInt(window.location.port) : 5555 });
       } catch {
         // Session not found, go back to dashboard
         setHash('/');
@@ -104,7 +138,19 @@ export default function App() {
     return () => window.removeEventListener('hashchange', handleHashChange);
   }, []);
 
-  // Auth screen
+  // Loading probe
+  if (checkingAuth) {
+    return (
+      <div className="auth-screen">
+        <div className="auth-form" style={{ textAlign: 'center' }}>
+          <h1 style={{ fontSize: 24, fontWeight: 700, marginBottom: 8 }}>🖥️ Remote Agent TUI</h1>
+          <p style={{ color: '#94a3b8', fontSize: 14 }}>Connecting...</p>
+        </div>
+      </div>
+    );
+  }
+
+  // Auth screen — only shown when server requires auth and no valid token stored
   if (!authed) {
     return (
       <div className="auth-screen">
@@ -172,7 +218,7 @@ export default function App() {
 
   return (
     <Dashboard
-      sessions={sessions}
+      sessions={localSessions}
       loading={loading}
       onAttach={handleAttach}
       onRefresh={loadSessions}
@@ -182,7 +228,32 @@ export default function App() {
         return s;
       }}
       onKillSession={async (id) => {
-        await api.killSession(id);
+        // Kill process/session, but keep local Dexie record as disconnected
+        // so user can reconnect/resume later.
+        const killed = await api.killSession(id);
+        const existing = await db.sessions.get(id);
+        if (existing) {
+          await db.sessions.put({
+            ...existing,
+            ...killed,
+            status: 'disconnected',
+            isTombstone: true,
+            attachedClients: 0,
+            agentSessionId: killed.agentSessionId || existing.agentSessionId || null,
+            lastServerSync: new Date().toISOString(),
+          });
+        }
+        await loadSessions();
+      }}
+      onKillAndRemoveSession={async (id) => {
+        // Multi-select destructive action: kill server session if present,
+        // then remove from browser DB too.
+        try {
+          await api.killSession(id);
+        } catch {
+          // Already disconnected / missing on server. Still remove locally.
+        }
+        await db.sessions.delete(id);
         await loadSessions();
       }}
       onRestartSession={async (id) => {
@@ -192,6 +263,11 @@ export default function App() {
       onDeleteSession={async (id) => {
         await api.deleteSession(id);
         await loadSessions();
+      }}
+      onResumeSession={async (id) => {
+        const result = await api.resumeAgentSession(id);
+        await loadSessions();
+        return result;
       }}
     />
   );

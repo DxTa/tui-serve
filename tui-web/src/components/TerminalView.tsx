@@ -3,6 +3,7 @@ import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { TerminalSocket } from '../lib/terminalSocket';
 import { api } from '../lib/apiClient';
+import { db } from '../lib/db';
 import { requestWakeLock, releaseWakeLock, setupWakeLockRecovery, onVisibilityChange, onConnectionChange } from '../lib/pwa-utils';
 import type { Session, Host, SessionStatus } from '../lib/types';
 
@@ -23,6 +24,7 @@ export default function TerminalView({ session, host, onBack, onSessionUpdate }:
   const [fontSize, setFontSize] = useState(14);
   const [showKillConfirm, setShowKillConfirm] = useState(false);
   const [restarting, setRestarting] = useState(false);
+  const [resuming, setResuming] = useState(false);
   const [visualViewportHeight, setVisualViewportHeight] = useState<number | null>(() => {
     if (typeof window === 'undefined') return null;
     return window.visualViewport?.height ?? window.innerHeight;
@@ -290,10 +292,23 @@ export default function TerminalView({ session, host, onBack, onSessionUpdate }:
   };
 
   const handleKill = async () => {
-    await api.killSession(currentSession.id);
+    const killed = await api.killSession(currentSession.id);
+    const existing = await db.sessions.get(currentSession.id);
+    if (existing) {
+      await db.sessions.put({
+        ...existing,
+        ...killed,
+        status: 'disconnected',
+        isTombstone: true,
+        attachedClients: 0,
+        agentSessionId: killed.agentSessionId || existing.agentSessionId || null,
+        lastServerSync: new Date().toISOString(),
+      });
+    }
     socketRef.current?.kill(currentSession.id);
     setShowKillConfirm(false);
     setCurrentSession((prev) => ({ ...prev, status: 'killed' as SessionStatus }));
+    onBack();
   };
 
   const handleRestart = async () => {
@@ -315,6 +330,20 @@ export default function TerminalView({ session, host, onBack, onSessionUpdate }:
     }
   };
 
+  const handleResumeAgent = async () => {
+    setResuming(true);
+    try {
+      const updated = await api.resumeAgentSession(currentSession.id);
+      setCurrentSession(updated);
+      onSessionUpdate(updated);
+    } catch (err: any) {
+      console.error('Resume failed:', err);
+      alert(`Resume failed: ${err.message}`);
+    } finally {
+      setResuming(false);
+    }
+  };
+
   const sendKey = (data: string) => {
     socketRef.current?.sendInput(currentSessionIdRef.current, data);
   };
@@ -325,7 +354,11 @@ export default function TerminalView({ session, host, onBack, onSessionUpdate }:
     connectionState === 'reconnecting' ? 'Reconnecting...' : 'Disconnected';
 
   const isRunning = currentSession.status === 'running' || currentSession.status === 'starting';
-  const isStopped = currentSession.status === 'stopped' || currentSession.status === 'crashed';
+  const isStopped = currentSession.status === 'stopped';
+  const isCrashed = currentSession.status === 'crashed';
+  // If crashed but tmux session still exists, we can still attach and show the terminal
+  // The user can see the shell prompt and resume from there
+  const isCrashedButAttachable = isCrashed; // server keeps tmux session alive on crash
 
   return (
     <div className="app-layout" style={visualViewportHeight ? { height: visualViewportHeight } : undefined}>
@@ -347,7 +380,19 @@ export default function TerminalView({ session, host, onBack, onSessionUpdate }:
           {isRunning && !restarting && (
             <button className="btn btn-danger btn-sm" onClick={() => setShowKillConfirm(true)}>Kill</button>
           )}
-          {(isStopped || currentSession.status === 'killed') && !restarting && (
+          {isCrashedButAttachable && !restarting && (
+            <>
+              {currentSession.agentSessionId && (
+                <button className="btn btn-primary btn-sm" onClick={handleResumeAgent} disabled={resuming}>
+                  {resuming ? 'Resuming...' : '🔄 Resume Agent'}
+                </button>
+              )}
+              <button className="btn btn-secondary btn-sm" onClick={handleRestart} disabled={restarting}>
+                Restart
+              </button>
+            </>
+          )}
+          {isStopped && !restarting && (
             <button className="btn btn-primary btn-sm" onClick={handleRestart} disabled={restarting}>
               Restart
             </button>
@@ -389,9 +434,9 @@ export default function TerminalView({ session, host, onBack, onSessionUpdate }:
             flexDirection: 'column', gap: 12,
           }}>
             <div style={{ fontSize: 18, fontWeight: 600 }}>
-              Session {currentSession.status === 'crashed' ? 'Crashed' : 'Stopped'}
+              Session Stopped
             </div>
-            {currentSession.exitCode !== null && (
+            {currentSession.exitCode !== null && currentSession.exitCode !== undefined && (
               <div style={{ color: '#94a3b8', fontSize: 14 }}>Exit code: {currentSession.exitCode}</div>
             )}
             <button className="btn btn-primary" onClick={handleRestart}>Restart Session</button>
@@ -409,15 +454,27 @@ export default function TerminalView({ session, host, onBack, onSessionUpdate }:
         )}
         {currentSession.status === 'crashed' && !restarting && (
           <div style={{
-            position: 'absolute', inset: 0, background: 'rgba(15,23,42,0.85)',
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-            flexDirection: 'column', gap: 12,
+            position: 'absolute', bottom: 0, left: 0, right: 0,
+            background: 'rgba(239, 68, 68, 0.15)', borderTop: '1px solid rgba(239, 68, 68, 0.3)',
+            padding: '8px 16px', display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+            zIndex: 10,
           }}>
-            <div style={{ fontSize: 18, fontWeight: 600, color: '#ef4444' }}>Session Crashed</div>
-            {currentSession.exitCode !== null && currentSession.exitCode !== undefined && (
-              <div style={{ color: '#94a3b8', fontSize: 14 }}>Exit code: {currentSession.exitCode}</div>
-            )}
-            <button className="btn btn-primary" onClick={handleRestart}>Restart Session</button>
+            <div>
+              <span style={{ color: '#ef4444', fontWeight: 600 }}>⚠ Agent crashed</span>
+              {(currentSession as any).crashCount > 0 && (
+                <span style={{ color: '#f97316', marginLeft: 8, fontSize: 12 }}> {(currentSession as any).crashCount}x crashes</span>
+              )}
+            </div>
+            <div style={{ display: 'flex', gap: 8 }}>
+              {currentSession.agentSessionId && (
+                <button className="btn btn-primary btn-sm" onClick={handleResumeAgent} disabled={resuming}>
+                  {resuming ? 'Resuming...' : '🔄 Resume'}
+                </button>
+              )}
+              <button className="btn btn-secondary btn-sm" onClick={handleRestart} disabled={restarting}>
+                Restart
+              </button>
+            </div>
           </div>
         )}
       </div>
@@ -459,7 +516,7 @@ function MobileKeyBar({ onKey }: { onKey: (data: string) => void }) {
     { label: '~', data: '~',     title: 'Tilde — home directory shortcut (~/)',         group: 'char' },
     { label: '|', data: '|',     title: 'Pipe — chain commands (cmd1 | cmd2)',         group: 'char' },
     // Enter keys
-    { label: '⇧ Enter', data: '\x1b\r', title: 'Shift+Enter — new line without submitting',  group: 'enter' },
+    { label: '⇧ Enter', data: '\x1b[13;2u', title: 'Shift+Enter — new line without submitting',  group: 'enter' },
     { label: 'Enter', data: '\r', title: 'Enter — submit command / newline',             group: 'enter' },
   ];
 
@@ -469,6 +526,7 @@ function MobileKeyBar({ onKey }: { onKey: (data: string) => void }) {
         <button
           key={k.label}
           className={`btn key-${k.group || 'default'}`}
+          onMouseDown={(e) => e.preventDefault()}
           onClick={() => onKey(k.data)}
           title={k.title}
         >

@@ -2,11 +2,15 @@ import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import { VitePWA } from 'vite-plugin-pwa';
 
+const apiPort = process.env.VITE_API_PORT || '3100';
+const apiHost = process.env.VITE_API_HOST || '127.0.0.1';
+
 export default defineConfig({
   plugins: [
     react(),
     VitePWA({
       registerType: 'autoUpdate',
+      injectRegister: 'auto',
       includeAssets: ['favicon.ico', 'pwa-192x192.png', 'pwa-512x512.png'],
       manifest: {
         name: 'Remote Agent TUI',
@@ -31,6 +35,9 @@ export default defineConfig({
         ],
       },
       workbox: {
+        skipWaiting: true,
+        clientsClaim: true,
+        cleanupOutdatedCaches: true,
         // Only cache static assets, not API calls or WebSocket
         runtimeCaching: [
           {
@@ -44,10 +51,11 @@ export default defineConfig({
     }),
   ],
   server: {
+    port: parseInt(process.env.VITE_DEV_PORT || '5173', 10),
     proxy: {
-      '/api': 'http://localhost:3000',
+      '/api': `http://${apiHost}:${apiPort}`,
       '/ws': {
-        target: 'ws://localhost:3000',
+        target: `ws://${apiHost}:${apiPort}`,
         ws: true,
       },
     },

@@ -44,7 +44,7 @@ jobs:
       - name: Upload .deb artifact
         uses: actions/upload-artifact@v4
         with:
-          name: remote-agent-tui-${{ steps.version.outputs.VERSION }}-amd64-deb
+          name: tui-serve-${{ steps.version.outputs.VERSION }}-amd64-deb
           path: packaging/dist/*.deb
           if-no-files-found: error
 
@@ -90,7 +90,7 @@ jobs:
   #     - name: Upload macOS artifact
   #       uses: actions/upload-artifact@v4
   #       with:
-  #         name: remote-agent-tui-${{ steps.version.outputs.VERSION }}-macos-arm64
+  #         name: tui-serve-${{ steps.version.outputs.VERSION }}-macos-arm64
   #         path: |
   #           packaging/dist/*.tar.gz
   #           packaging/dist/checksums-*.txt
@@ -108,13 +108,13 @@ jobs:
       - name: Download .deb artifact
         uses: actions/download-artifact@v4
         with:
-          name: remote-agent-tui-${{ steps.version.outputs.VERSION }}-amd64-deb
+          name: tui-serve-${{ steps.version.outputs.VERSION }}-amd64-deb
           path: release-artifacts/
 
       # - name: Download macOS artifact
       #   uses: actions/download-artifact@v4
       #   with:
-      #     name: remote-agent-tui-${{ steps.version.outputs.VERSION }}-macos-arm64
+      #     name: tui-serve-${{ steps.version.outputs.VERSION }}-macos-arm64
       #     path: release-artifacts/
 
       - name: List release artifacts
@@ -130,7 +130,7 @@ jobs:
           generate_release_notes: true
           files: release-artifacts/*
           body: |
-            ## Remote Agent TUI ${{ github.ref_name }}
+            ## TUI Serve ${{ github.ref_name }}
 
             ### Downloads
 
@@ -142,7 +142,7 @@ jobs:
             ### Quick Start (Linux)
 
             ```bash
-            sudo dpkg -i remote-agent-tui_*_amd64.deb
+            sudo dpkg -i tui-serve_*_amd64.deb
             sudo apt-get install -f   # resolve deps (tmux, libc)
             # Service starts automatically on port 5555
             # No auth required by default — set AUTH_TOKEN to enable
@@ -151,14 +151,14 @@ jobs:
             ### Quick Start (macOS)
 
             ```bash
-            tar xzf remote-agent-tui_*-macos-arm64.tar.gz
-            cd remote-agent-tui-*/
+            tar xzf tui-serve_*-macos-arm64.tar.gz
+            cd tui-serve-*/
             ./deploy/scripts/install-macos.sh
             ```
 
             **Note:** macOS may quarantine the downloaded archive. If you see "cannot be opened because it is from an unidentified developer", run:
             ```bash
-            xattr -cr /usr/local/opt/remote-agent-tui
+            xattr -cr /usr/local/opt/tui-serve
             ```
             The installer handles this automatically, but you may need it if you run the binary directly.
 

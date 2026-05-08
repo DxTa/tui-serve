@@ -8,7 +8,7 @@ const WEAK_TOKENS = new Set([
   'secret',
   'token',
   'auth_token',
-  'remote-agent-tui',
+  'tui-serve',
   '123456',
   '123456789',
 ]);

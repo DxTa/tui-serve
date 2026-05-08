@@ -22,12 +22,12 @@ assert_contains() {
 BUILD_DEB="$PROJECT_DIR/packaging/build-deb.sh"
 BUILD_MACOS="$PROJECT_DIR/packaging/build-macos.sh"
 POSTINST="$PROJECT_DIR/packaging/debian/postinst"
-SERVICE="$PROJECT_DIR/packaging/debian/systemd/remote-agent-tui.service"
+SERVICE="$PROJECT_DIR/packaging/debian/systemd/tui-serve.service"
 DOCTOR="$PROJECT_DIR/packaging/scripts/doctor.sh"
 USER_INSTALL="$PROJECT_DIR/packaging/scripts/install-user-service.sh"
-USER_SERVICE="$PROJECT_DIR/packaging/systemd/remote-agent-tui-user.service"
+USER_SERVICE="$PROJECT_DIR/packaging/systemd/tui-serve-user.service"
 
-assert_contains "$BUILD_DEB" 'server/node_modules/." "${PKG_DIR}/usr/lib/remote-agent-tui/server/node_modules/"' \
+assert_contains "$BUILD_DEB" 'server/node_modules/." "${PKG_DIR}/usr/lib/tui-serve/server/node_modules/"' \
   ".deb copies node_modules contents, not nested directory"
 assert_contains "$BUILD_DEB" 'node_modules/fastify/package.json' \
   ".deb validates fastify package layout"
@@ -47,14 +47,14 @@ assert_contains "$POSTINST" 'allowedCwdRoots' \
   "postinst generates allowed workspace roots"
 assert_contains "$POSTINST" 'ensure_installer_home_in_config' \
   "postinst migrates existing config with installer home"
-assert_contains "$POSTINST" '/usr/share/doc/remote-agent-tui/install-user-service.sh' \
+assert_contains "$POSTINST" '/usr/share/doc/tui-serve/install-user-service.sh' \
   "postinst prints user service install command"
 assert_contains "$POSTINST" 'systemctl --system daemon-reload' \
   "postinst registers system unit without autostart"
 if awk '
   /# ── systemd unit registration ──/ { in_block = 1 }
   in_block && /;;/ { in_block = 0 }
-  in_block && /systemctl (enable|start|restart) remote-agent-tui/ { found = 1 }
+  in_block && /systemctl (enable|start|restart) tui-serve/ { found = 1 }
   END { exit found ? 0 : 1 }
 ' "$POSTINST"; then
   echo "❌ postinst must not enable/start system service by default" >&2
@@ -79,11 +79,13 @@ assert_contains "$USER_INSTALL" 'systemctl --user enable --now' \
   "user installer enables user service"
 assert_contains "$USER_INSTALL" '"commands": [' \
   "user installer writes array-based config"
-assert_contains "$USER_INSTALL" 'allowedCwdRoots": ["$HOME", "/tmp"]' \
-  "user installer defaults roots to user home"
-assert_contains "$USER_SERVICE" 'WorkingDirectory=%h/.local/share/remote-agent-tui/server' \
+assert_contains "$USER_INSTALL" 'default_allowed_roots()' \
+  "user installer computes default roots"
+assert_contains "$USER_INSTALL" 'TUI_SERVE_ALLOWED_ROOTS' \
+  "user installer allows env override for roots"
+assert_contains "$USER_SERVICE" 'WorkingDirectory=%h/.local/share/tui-serve/server' \
   "user service runs from user-local server dir"
-assert_contains "$USER_SERVICE" 'REMOTE_AGENT_TUI_DATA_DIR=%h/.local/share/remote-agent-tui/data' \
+assert_contains "$USER_SERVICE" 'TUI_SERVE_DATA_DIR=%h/.local/share/tui-serve/data' \
   "user service stores data in user-local dir"
 
 # ── macOS build script assertions ──
@@ -91,7 +93,7 @@ assert_contains "$BUILD_MACOS" 'MACOSX_DEPLOYMENT_TARGET' \
   "macOS build sets deployment target"
 assert_contains "$BUILD_MACOS" 'codesign' \
   "macOS build ad-hoc signs native binaries"
-assert_contains "$BUILD_MACOS" 'remote-agent-tui.sh' \
+assert_contains "$BUILD_MACOS" 'tui-serve.sh' \
   "macOS build includes launcher wrapper"
 assert_contains "$BUILD_MACOS" 'doctor-macos' \
   "macOS build includes doctor script"
@@ -106,7 +108,7 @@ assert_contains "$MACOS_INSTALL" 'xattr -cr' \
   "macOS installer strips quarantine"
 assert_contains "$MACOS_INSTALL" 'tmux' \
   "macOS installer checks tmux prerequisite"
-assert_contains "$MACOS_INSTALL" 'remote-agent-tui.sh' \
+assert_contains "$MACOS_INSTALL" 'tui-serve.sh' \
   "macOS installer installs launcher wrapper"
 assert_contains "$MACOS_INSTALL" 'xattr -cr' \
   "macOS installer strips quarantine"
@@ -114,8 +116,8 @@ assert_contains "$MACOS_INSTALL" '/../..' \
   "macOS installer resolves bundle root via deploy/scripts path"
 
 # ── macOS plist assertions ──
-PLIST="$PROJECT_DIR/packaging/macos/com.remote-agent-tui.plist"
-assert_contains "$PLIST" 'remote-agent-tui.sh' \
+PLIST="$PROJECT_DIR/packaging/macos/com.tui-serve.plist"
+assert_contains "$PLIST" 'tui-serve.sh' \
   "plist invokes launcher wrapper"
 assert_contains "$PLIST" 'KeepAlive' \
   "plist has KeepAlive key"
@@ -136,7 +138,7 @@ assert_contains "$MACOS_DOCTOR" 'sw_vers' \
   "macOS doctor checks macOS version"
 
 # ── macOS launcher wrapper assertions ──
-LAUNCHER="$PROJECT_DIR/packaging/macos/remote-agent-tui.sh"
+LAUNCHER="$PROJECT_DIR/packaging/macos/tui-serve.sh"
 assert_contains "$LAUNCHER" '. "${CONFIG_DIR}/env"' \
   "launcher wrapper sources env file"
 assert_contains "$LAUNCHER" 'set -a' \

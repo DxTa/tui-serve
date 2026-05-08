@@ -54,7 +54,7 @@ const clients = new Map<WebSocket, ClientState>();
 
 export function setupWebSocket(server: FastifyInstance): WebSocketServer {
   const wss = new WebSocketServer({ server: server.server, path: '/ws' });
-  const allowQueryToken = process.env.REMOTE_AGENT_TUI_ALLOW_WS_QUERY_TOKEN !== '0';
+  const allowQueryToken = process.env.TUI_SERVE_ALLOW_WS_QUERY_TOKEN !== '0';
 
   wss.on('connection', (ws: WebSocket, req) => {
     const client: ClientState = {

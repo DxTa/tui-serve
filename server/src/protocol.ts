@@ -1,8 +1,8 @@
 // Protocol types and helpers for the WebSocket hybrid protocol
 // Binary (0x00) for terminal I/O, JSON (0x01) for control messages
 
-export { PROTOCOL_VERSION, type ClientMessage, type ServerMessage, type SessionStatus } from '@remote-agent-tui/shared';
-import { clientMessageSchema, serverMessageSchema, PROTOCOL_VERSION, type ClientMessage, type ServerMessage } from '@remote-agent-tui/shared';
+export { PROTOCOL_VERSION, type ClientMessage, type ServerMessage, type SessionStatus } from '@tui-serve/shared';
+import { clientMessageSchema, serverMessageSchema, PROTOCOL_VERSION, type ClientMessage, type ServerMessage } from '@tui-serve/shared';
 
 // Frame type prefixes
 export const FRAME_BINARY = 0x00;

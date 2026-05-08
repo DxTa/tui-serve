@@ -1,30 +1,30 @@
 #!/usr/bin/env bash
-# Install Remote Agent TUI as a per-user systemd service.
+# Install TUI Serve as a per-user systemd service.
 # Preferred for desktop/dev machines: agents run as the real user, with the
 # user's HOME, PATH, tmux socket, dotfiles, SSH keys, and agent config.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
-PACKAGED_PREFIX="/usr/lib/remote-agent-tui"
-PACKAGED_WEB_DIR="/usr/share/remote-agent-tui/web"
-PACKAGED_USER_SERVICE="/usr/share/remote-agent-tui/systemd/remote-agent-tui-user.service"
+PACKAGED_PREFIX="/usr/lib/tui-serve"
+PACKAGED_WEB_DIR="/usr/share/tui-serve/web"
+PACKAGED_USER_SERVICE="/usr/share/tui-serve/systemd/tui-serve-user.service"
 
 if [ ! -d "$PROJECT_DIR/server" ] && [ -d "$PACKAGED_PREFIX/server" ]; then
   PROJECT_DIR=""
 fi
 
-PREFIX="${REMOTE_AGENT_TUI_USER_PREFIX:-$HOME/.local/share/remote-agent-tui}"
-CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/remote-agent-tui"
+PREFIX="${TUI_SERVE_USER_PREFIX:-$HOME/.local/share/tui-serve}"
+CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/tui-serve"
 SYSTEMD_USER_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
-SERVICE_NAME="remote-agent-tui.service"
+SERVICE_NAME="tui-serve.service"
 PORT="${PORT:-5555}"
 NODE_VERSION="${NODE_VERSION:-22.15.0}"
-BIND_HOST="${BIND_HOST:-${REMOTE_AGENT_TUI_BIND_HOST:-0.0.0.0}}"
+BIND_HOST="${BIND_HOST:-${TUI_SERVE_BIND_HOST:-0.0.0.0}}"
 GENERATED_AUTH_TOKEN=""
 
 is_interactive() {
-  [ -t 0 ] && [ -t 1 ] && [ "${REMOTE_AGENT_TUI_NONINTERACTIVE:-}" != "1" ]
+  [ -t 0 ] && [ -t 1 ] && [ "${TUI_SERVE_NONINTERACTIVE:-}" != "1" ]
 }
 
 generate_token() {
@@ -68,12 +68,12 @@ default_allowed_roots() {
 }
 
 onboard_config() {
-  default_roots="${REMOTE_AGENT_TUI_ALLOWED_ROOTS:-$(default_allowed_roots)}"
+  default_roots="${TUI_SERVE_ALLOWED_ROOTS:-$(default_allowed_roots)}"
   ALLOWED_ROOTS="$default_roots"
 
   if is_interactive; then
     echo ""
-    echo "Remote Agent TUI network setup"
+    echo "TUI Serve network setup"
     echo "1) Network/LAN/Tailscale (0.0.0.0, auth required)"
     echo "2) Local only (127.0.0.1, auth optional)"
     printf "Choose bind mode [1]: "
@@ -110,7 +110,7 @@ esac
 
 NODE_TARBALL="node-v${NODE_VERSION}-linux-${NODE_ARCH}"
 NODE_URL="https://nodejs.org/dist/v${NODE_VERSION}/${NODE_TARBALL}.tar.gz"
-NODE_CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/remote-agent-tui/node-cache"
+NODE_CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/tui-serve/node-cache"
 NODE_TARBALL_PATH="${NODE_CACHE}/${NODE_TARBALL}.tar.gz"
 
 if ! command -v systemctl >/dev/null 2>&1; then
@@ -179,12 +179,12 @@ elif [ -n "$PROJECT_DIR" ]; then
   fi
 
   # Resolve workspace symlinks that would be broken in the install directory
-  if [ -L "$PREFIX/server/node_modules/@remote-agent-tui/shared" ]; then
-    SHARED_TARGET="$(readlink -f "$PROJECT_DIR/node_modules/@remote-agent-tui/shared")"
-    rm "$PREFIX/server/node_modules/@remote-agent-tui/shared"
-    cp -a "$SHARED_TARGET" "$PREFIX/server/node_modules/@remote-agent-tui/shared"
+  if [ -L "$PREFIX/server/node_modules/@tui-serve/shared" ]; then
+    SHARED_TARGET="$(readlink -f "$PROJECT_DIR/node_modules/@tui-serve/shared")"
+    rm "$PREFIX/server/node_modules/@tui-serve/shared"
+    cp -a "$SHARED_TARGET" "$PREFIX/server/node_modules/@tui-serve/shared"
   fi
-  rm -f "$PREFIX/server/node_modules/remote-agent-tui-server"
+  rm -f "$PREFIX/server/node_modules/tui-serve-server"
 
   cp -a "$PROJECT_DIR/tui-web/dist/." "$PREFIX/web/"
 else
@@ -192,11 +192,11 @@ else
   exit 1
 fi
 
-default_roots="${REMOTE_AGENT_TUI_ALLOWED_ROOTS:-$(default_allowed_roots)}"
+default_roots="${TUI_SERVE_ALLOWED_ROOTS:-$(default_allowed_roots)}"
 ALLOWED_ROOTS="$default_roots"
 
 if [ -f "$CONFIG_DIR/default-config.json" ] || [ -f "$CONFIG_DIR/env" ]; then
-  echo "Existing Remote Agent TUI configuration found."
+  echo "Existing TUI Serve configuration found."
   [ -f "$CONFIG_DIR/default-config.json" ] && echo "  Config: $CONFIG_DIR/default-config.json"
   [ -f "$CONFIG_DIR/env" ] && echo "  Env: $CONFIG_DIR/env"
   echo "Using existing configuration paths; skipping interactive setup."
@@ -225,14 +225,14 @@ fi
 
 if [ ! -f "$CONFIG_DIR/env" ]; then
   cat > "$CONFIG_DIR/env" << EOF
-# Remote Agent TUI per-user environment
+# TUI Serve per-user environment
 AUTH_TOKEN=${AUTH_TOKEN:-}
 BIND_HOST=$BIND_HOST
 PORT=$PORT
 NODE_ENV=production
-REMOTE_AGENT_TUI_CONFIG=$CONFIG_DIR/default-config.json
-REMOTE_AGENT_TUI_DATA_DIR=$PREFIX/data
-REMOTE_AGENT_TUI_WEB_DIR=$PREFIX/web
+TUI_SERVE_CONFIG=$CONFIG_DIR/default-config.json
+TUI_SERVE_DATA_DIR=$PREFIX/data
+TUI_SERVE_WEB_DIR=$PREFIX/web
 
 # Add user-local bins so pi/claude/codex installed under HOME are found.
 PATH=$HOME/.local/bin:$HOME/.npm-global/bin:$HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin
@@ -279,8 +279,8 @@ fi
 
 if [ -f "$PACKAGED_USER_SERVICE" ]; then
   cp "$PACKAGED_USER_SERVICE" "$SYSTEMD_USER_DIR/$SERVICE_NAME"
-elif [ -n "$PROJECT_DIR" ] && [ -f "$PROJECT_DIR/packaging/systemd/remote-agent-tui-user.service" ]; then
-  cp "$PROJECT_DIR/packaging/systemd/remote-agent-tui-user.service" "$SYSTEMD_USER_DIR/$SERVICE_NAME"
+elif [ -n "$PROJECT_DIR" ] && [ -f "$PROJECT_DIR/packaging/systemd/tui-serve-user.service" ]; then
+  cp "$PROJECT_DIR/packaging/systemd/tui-serve-user.service" "$SYSTEMD_USER_DIR/$SERVICE_NAME"
 else
   echo "User service template not found." >&2
   exit 1
@@ -293,7 +293,7 @@ else
 fi
 
 echo ""
-echo "Remote Agent TUI user service installed."
+echo "TUI Serve user service installed."
 echo "URL: http://localhost:$PORT"
 if [ -n "$GENERATED_AUTH_TOKEN" ]; then
   echo "AUTH_TOKEN: $GENERATED_AUTH_TOKEN"

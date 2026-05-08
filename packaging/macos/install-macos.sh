@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# install-macos.sh — Install Remote Agent TUI on macOS
+# install-macos.sh — Install TUI Serve on macOS
 #
 # Usage: ./install-macos.sh [--user USER]
 #
@@ -41,13 +41,13 @@ fi
 # Bundle root: <bundle>/
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 BUNDLE_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
-INSTALL_BASE="/usr/local/opt/remote-agent-tui"
-CONFIG_DIR="/usr/local/etc/remote-agent-tui"
-DATA_DIR="/usr/local/var/lib/remote-agent-tui"
+INSTALL_BASE="/usr/local/opt/tui-serve"
+CONFIG_DIR="/usr/local/etc/tui-serve"
+DATA_DIR="/usr/local/var/lib/tui-serve"
 LOG_DIR="/usr/local/var/log"
-APP_LOG_DIR="/usr/local/var/log/remote-agent-tui"
+APP_LOG_DIR="/usr/local/var/log/tui-serve"
 PORT="${PORT:-5555}"
-BIND_HOST="${BIND_HOST:-${REMOTE_AGENT_TUI_BIND_HOST:-0.0.0.0}}"
+BIND_HOST="${BIND_HOST:-${TUI_SERVE_BIND_HOST:-0.0.0.0}}"
 GENERATED_AUTH_TOKEN=""
 
 generate_token() {
@@ -59,10 +59,10 @@ generate_token() {
 }
 
 is_interactive() {
-  [ -t 0 ] && [ -t 1 ] && [ "${REMOTE_AGENT_TUI_NONINTERACTIVE:-}" != "1" ]
+  [ -t 0 ] && [ -t 1 ] && [ "${TUI_SERVE_NONINTERACTIVE:-}" != "1" ]
 }
 
-echo "=== Remote Agent TUI — macOS Install ==="
+echo "=== TUI Serve — macOS Install ==="
 echo ""
 echo "Install base:  $INSTALL_BASE"
 echo "Config dir:    $CONFIG_DIR"
@@ -90,7 +90,7 @@ echo "    tmux $(tmux -V 2>/dev/null | sed 's/tmux //' || echo "detected") ✓"
 echo ">>> Installing to $INSTALL_BASE..."
 
 # Stop existing service and unload plist before removing files
-EXISTING_PLIST="$HOME/Library/LaunchAgents/com.remote-agent-tui.plist"
+EXISTING_PLIST="$HOME/Library/LaunchAgents/com.tui-serve.plist"
 if [ -f "$EXISTING_PLIST" ]; then
   echo "    Stopping existing service..."
   launchctl unload "$EXISTING_PLIST" 2>/dev/null || true
@@ -109,16 +109,16 @@ sudo cp -R "$BUNDLE_DIR/web" "$INSTALL_BASE/"
 
 # Copy launcher wrapper
 sudo mkdir -p "$INSTALL_BASE/bin"
-if [ -f "$BUNDLE_DIR/bin/remote-agent-tui.sh" ]; then
-  sudo cp "$BUNDLE_DIR/bin/remote-agent-tui.sh" "$INSTALL_BASE/bin/"
-  sudo chmod 755 "$INSTALL_BASE/bin/remote-agent-tui.sh"
+if [ -f "$BUNDLE_DIR/bin/tui-serve.sh" ]; then
+  sudo cp "$BUNDLE_DIR/bin/tui-serve.sh" "$INSTALL_BASE/bin/"
+  sudo chmod 755 "$INSTALL_BASE/bin/tui-serve.sh"
 else
   # Fallback: create launcher wrapper inline (for source builds)
-  sudo tee "$INSTALL_BASE/bin/remote-agent-tui.sh" >/dev/null << 'LAUNCHER'
+  sudo tee "$INSTALL_BASE/bin/tui-serve.sh" >/dev/null << 'LAUNCHER'
 #!/usr/bin/env bash
 set -euo pipefail
-INSTALL_BASE="/usr/local/opt/remote-agent-tui"
-CONFIG_DIR="/usr/local/etc/remote-agent-tui"
+INSTALL_BASE="/usr/local/opt/tui-serve"
+CONFIG_DIR="/usr/local/etc/tui-serve"
 set -a
 if [ -f "${CONFIG_DIR}/env" ]; then
   . "${CONFIG_DIR}/env"
@@ -127,7 +127,7 @@ set +a
 exec "${INSTALL_BASE}/node/bin/node" \
   "${INSTALL_BASE}/server/dist/index.js"
 LAUNCHER
-  sudo chmod 755 "$INSTALL_BASE/bin/remote-agent-tui.sh"
+  sudo chmod 755 "$INSTALL_BASE/bin/tui-serve.sh"
 fi
 
 # Copy doctor script
@@ -154,7 +154,7 @@ fi
 
 if is_interactive; then
   echo ""
-  echo "Remote Agent TUI network setup"
+  echo "TUI Serve network setup"
   echo "1) Network/LAN/Tailscale (0.0.0.0, auth required)"
   echo "2) Local only (127.0.0.1, auth optional)"
   printf "Choose bind mode [1]: "
@@ -176,9 +176,9 @@ if [ ! -f "$CONFIG_DIR/env" ]; then
   ENV_TMP="$(mktemp)"
   chmod 600 "$ENV_TMP"
   cat > "$ENV_TMP" << EOF
-# Remote Agent TUI environment configuration
+# TUI Serve environment configuration
 # Edit this file to change settings, then:
-#   launchctl kickstart -k gui/\$(id -u)/com.remote-agent-tui
+#   launchctl kickstart -k gui/\$(id -u)/com.tui-serve
 
 # Network mode requires a strong AUTH_TOKEN. For local-only no-auth mode,
 # set BIND_HOST=127.0.0.1 and AUTH_TOKEN=, then restart.
@@ -186,9 +186,9 @@ AUTH_TOKEN=${AUTH_TOKEN:-}
 BIND_HOST=$BIND_HOST
 PORT=$PORT
 NODE_ENV=production
-REMOTE_AGENT_TUI_CONFIG=$CONFIG_DIR/default-config.json
-REMOTE_AGENT_TUI_DATA_DIR=$DATA_DIR
-REMOTE_AGENT_TUI_WEB_DIR=$INSTALL_BASE/web
+TUI_SERVE_CONFIG=$CONFIG_DIR/default-config.json
+TUI_SERVE_DATA_DIR=$DATA_DIR
+TUI_SERVE_WEB_DIR=$INSTALL_BASE/web
 EOF
   sudo cp "$ENV_TMP" "$CONFIG_DIR/env"
   sudo chown "$INSTALL_USER" "$CONFIG_DIR/env"
@@ -211,13 +211,13 @@ echo "    Data directory ready ✓"
 
 # ── launchd service ──
 echo ">>> Installing launchd service..."
-PLIST_SRC="$BUNDLE_DIR/deploy/launchd/com.remote-agent-tui.plist"
-PLIST_DST="$HOME/Library/LaunchAgents/com.remote-agent-tui.plist"
+PLIST_SRC="$BUNDLE_DIR/deploy/launchd/com.tui-serve.plist"
+PLIST_DST="$HOME/Library/LaunchAgents/com.tui-serve.plist"
 
 # If a system-wide plist exists, remove it first
-if [ -f "/Library/LaunchDaemons/com.remote-agent-tui.plist" ]; then
-  sudo launchctl bootout system/com.remote-agent-tui 2>/dev/null || true
-  sudo rm /Library/LaunchDaemons/com.remote-agent-tui.plist
+if [ -f "/Library/LaunchDaemons/com.tui-serve.plist" ]; then
+  sudo launchctl bootout system/com.tui-serve 2>/dev/null || true
+  sudo rm /Library/LaunchDaemons/com.tui-serve.plist
 fi
 
 mkdir -p "$HOME/Library/LaunchAgents"
@@ -240,9 +240,9 @@ fi
 
 # Update paths in plist for this user's install
 if [ -n "$PLIST_DST" ] && [ -f "$PLIST_DST" ]; then
-  sed -i '' "s|/usr/local/opt/remote-agent-tui/server|$INSTALL_BASE/server|g" "$PLIST_DST" 2>/dev/null || true
-  sed -i '' "s|/usr/local/opt/remote-agent-tui/bin/remote-agent-tui.sh|$INSTALL_BASE/bin/remote-agent-tui.sh|g" "$PLIST_DST" 2>/dev/null || true
-  sed -i '' "s|/usr/local/var/log/remote-agent-tui|$APP_LOG_DIR|g" "$PLIST_DST" 2>/dev/null || true
+  sed -i '' "s|/usr/local/opt/tui-serve/server|$INSTALL_BASE/server|g" "$PLIST_DST" 2>/dev/null || true
+  sed -i '' "s|/usr/local/opt/tui-serve/bin/tui-serve.sh|$INSTALL_BASE/bin/tui-serve.sh|g" "$PLIST_DST" 2>/dev/null || true
+  sed -i '' "s|/usr/local/var/log/tui-serve|$APP_LOG_DIR|g" "$PLIST_DST" 2>/dev/null || true
 fi
 
 echo "    launchd plist installed ✓"
@@ -268,13 +268,13 @@ echo "║    nano $CONFIG_DIR/env"
 if [ -n "$GENERATED_AUTH_TOKEN" ]; then
   echo "║    Generated token was written to env file.              ║"
 fi
-echo "║    launchctl kickstart -k gui/$(id -u)/com.remote-agent-tui"
+echo "║    launchctl kickstart -k gui/$(id -u)/com.tui-serve"
 echo "║                                                          ║"
 echo "║  Config:  $CONFIG_DIR/default-config.json"
 echo "║  Logs:    $APP_LOG_DIR/"
 echo "║                                                          ║"
 echo "║  Stop:    launchctl unload $PLIST_DST"
-echo "║  Restart: launchctl kickstart -k gui/$(id -u)/com.remote-agent-tui"
+echo "║  Restart: launchctl kickstart -k gui/$(id -u)/com.tui-serve"
 echo "║  Uninstall: ./deploy/scripts/uninstall-macos.sh           ║"
 echo "║  Doctor:   $INSTALL_BASE/deploy/scripts/doctor-macos.sh   ║"
 echo "╚══════════════════════════════════════════════════════════╝"

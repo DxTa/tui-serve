@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# doctor-macos.sh — Health check script for remote-agent-tui on macOS
+# doctor-macos.sh — Health check script for tui-serve on macOS
 #
 # Run this to diagnose common installation issues on macOS.
 #
 # Usage: ./packaging/macos/doctor-macos.sh
-#     or: /usr/local/opt/remote-agent-tui/deploy/scripts/doctor-macos.sh (after install)
+#     or: /usr/local/opt/tui-serve/deploy/scripts/doctor-macos.sh (after install)
 
 set -euo pipefail
 
@@ -12,17 +12,17 @@ PASS=0
 FAIL=0
 WARN=0
 
-INSTALL_BASE="/usr/local/opt/remote-agent-tui"
-CONFIG_DIR="/usr/local/etc/remote-agent-tui"
-APP_LOG_DIR="/usr/local/var/log/remote-agent-tui"
-DATA_DIR="/usr/local/var/lib/remote-agent-tui"
+INSTALL_BASE="/usr/local/opt/tui-serve"
+CONFIG_DIR="/usr/local/etc/tui-serve"
+APP_LOG_DIR="/usr/local/var/log/tui-serve"
+DATA_DIR="/usr/local/var/lib/tui-serve"
 LOG_DIR="/usr/local/var/log"
 
 # Detect if we're running from the installed package or from source
 if [ -x "${INSTALL_BASE}/node/bin/node" ]; then
   NODE_BIN="${INSTALL_BASE}/node/bin/node"
   APP_DIR="${INSTALL_BASE}/server"
-  LAUNCHER="${INSTALL_BASE}/bin/remote-agent-tui.sh"
+  LAUNCHER="${INSTALL_BASE}/bin/tui-serve.sh"
 else
   echo "  ⚠️  Running in development mode (no installed package found)"
   NODE_BIN="$(command -v node 2>/dev/null || echo "")"
@@ -61,7 +61,7 @@ warn() {
   WARN=$((WARN + 1))
 }
 
-echo "=== Remote Agent TUI — macOS Doctor ==="
+echo "=== TUI Serve — macOS Doctor ==="
 echo ""
 
 # ── macOS version ──
@@ -183,7 +183,7 @@ if [ -n "${LAUNCHER}" ] && [ -f "${LAUNCHER}" ]; then
     FAIL=$((FAIL + 1))
   fi
   # Check launcher references correct paths
-  if grep -q 'INSTALL_BASE="/usr/local/opt/remote-agent-tui"' "${LAUNCHER}"; then
+  if grep -q 'INSTALL_BASE="/usr/local/opt/tui-serve"' "${LAUNCHER}"; then
     echo "  ✅ Launcher references correct install base"
     PASS=$((PASS + 1))
   else
@@ -223,13 +223,13 @@ echo ""
 
 # ── launchd service ──
 echo "── launchd service ──"
-PLIST_PATH="$HOME/Library/LaunchAgents/com.remote-agent-tui.plist"
+PLIST_PATH="$HOME/Library/LaunchAgents/com.tui-serve.plist"
 if [ -f "$PLIST_PATH" ]; then
   echo "  ✅ launchd plist: ${PLIST_PATH}"
   PASS=$((PASS + 1))
 
   # Check plist uses launcher wrapper, not direct node invocation
-  if grep -q 'remote-agent-tui.sh' "$PLIST_PATH"; then
+  if grep -q 'tui-serve.sh' "$PLIST_PATH"; then
     echo "  ✅ plist invokes launcher wrapper"
     PASS=$((PASS + 1))
   else
@@ -238,7 +238,7 @@ if [ -f "$PLIST_PATH" ]; then
   fi
 
   # Check launchctl service status
-  SERVICE_STATUS="$(launchctl list 2>/dev/null | grep 'com.remote-agent-tui' || true)"
+  SERVICE_STATUS="$(launchctl list 2>/dev/null | grep 'com.tui-serve' || true)"
   if [ -n "$SERVICE_STATUS" ]; then
     echo "  ✅ Service is loaded in launchctl"
     PASS=$((PASS + 1))
@@ -273,7 +273,7 @@ check_xattr() {
     QUARANTINE="$(xattr -p com.apple.quarantine "$file" 2>/dev/null || true)"
     if [ -n "$QUARANTINE" ]; then
       echo "  ❌ ${label}: has quarantine attribute"
-      echo "     Fix: xattr -cr /usr/local/opt/remote-agent-tui"
+      echo "     Fix: xattr -cr /usr/local/opt/tui-serve"
       FAIL=$((FAIL + 1))
     else
       echo "  ✅ ${label}: no quarantine attribute"
@@ -285,7 +285,7 @@ check_xattr() {
 if [ -d "${INSTALL_BASE}" ]; then
   # Check key binaries for quarantine
   check_xattr "${INSTALL_BASE}/node/bin/node" "Node.js binary"
-  check_xattr "${INSTALL_BASE}/bin/remote-agent-tui.sh" "Launcher wrapper"
+  check_xattr "${INSTALL_BASE}/bin/tui-serve.sh" "Launcher wrapper"
 
   # Check if any .node files have quarantine
   NODE_FILES="$(find "${INSTALL_BASE}" -name '*.node' -type f 2>/dev/null || true)"
@@ -326,7 +326,7 @@ if command -v lsof >/dev/null 2>&1; then
     PASS=$((PASS + 1))
   else
     echo "  ⚠️  Port ${CONFIG_PORT} is not listening"
-    echo "  ⚠️  Start the service: launchctl kickstart -k gui/$(id -u)/com.remote-agent-tui"
+    echo "  ⚠️  Start the service: launchctl kickstart -k gui/$(id -u)/com.tui-serve"
     WARN=$((WARN + 1))
   fi
 else
@@ -356,7 +356,7 @@ echo ""
 
 # ── Recent errors ──
 echo "── Recent errors ──"
-ERR_LOG="${APP_LOG_DIR}/remote-agent-tui.err"
+ERR_LOG="${APP_LOG_DIR}/tui-serve.err"
 if [ -f "$ERR_LOG" ]; then
   RECENT_ERRORS="$(tail -5 "$ERR_LOG" 2>/dev/null || true)"
   if [ -n "$RECENT_ERRORS" ]; then
@@ -391,6 +391,6 @@ elif [ "$WARN" -gt 0 ]; then
   echo "⚠️  All critical checks passed, but there are warnings."
   exit 0
 else
-  echo "✅ All checks passed! Remote Agent TUI is healthy."
+  echo "✅ All checks passed! TUI Serve is healthy."
   exit 0
 fi

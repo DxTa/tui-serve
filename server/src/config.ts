@@ -39,8 +39,8 @@ import { fileURLToPath } from 'url';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 function loadDefaultConfig(): { commands: CommandAllowlistEntry[]; hosts: HostConfig[] } {
-  // REMOTE_AGENT_TUI_CONFIG overrides the config file path (for packaged installs)
-  const configPath = process.env.REMOTE_AGENT_TUI_CONFIG || resolve(__dirname, '..', 'default-config.json');
+  // TUI_SERVE_CONFIG overrides the config file path (for packaged installs)
+  const configPath = process.env.TUI_SERVE_CONFIG || resolve(__dirname, '..', 'default-config.json');
   if (existsSync(configPath)) {
     return JSON.parse(readFileSync(configPath, 'utf-8'));
   }
@@ -98,7 +98,7 @@ const commandsWithHome = defaults.commands.map((cmd) => {
 
 export const config: Config = {
   port: parseInt(process.env.PORT || '5555', 10),
-  bindHost: process.env.BIND_HOST || process.env.REMOTE_AGENT_TUI_BIND_HOST || '0.0.0.0',
+  bindHost: process.env.BIND_HOST || process.env.TUI_SERVE_BIND_HOST || '0.0.0.0',
   authToken: process.env.AUTH_TOKEN || '',
   authRequired: !!(process.env.AUTH_TOKEN && process.env.AUTH_TOKEN.length > 0),
   commands: commandsWithHome,

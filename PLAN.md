@@ -1115,14 +1115,14 @@ Success criteria:
 
 ```bash
 # Initial setup per Pi
-scp -r remote-agent-tui/ pi-1:/opt/remote-agent-tui/
-ssh pi-1 'cd /opt/remote-agent-tui/server && npm install && npm run build'
-ssh pi-1 'sudo cp deploy/systemd/remote-agent-tui.service /etc/systemd/system/'
-ssh pi-1 'sudo systemctl enable --now remote-agent-tui'
+scp -r tui-serve/ pi-1:/opt/tui-serve/
+ssh pi-1 'cd /opt/tui-serve/server && npm install && npm run build'
+ssh pi-1 'sudo cp deploy/systemd/tui-serve.service /etc/systemd/system/'
+ssh pi-1 'sudo systemctl enable --now tui-serve'
 ```
 
-- Update: git pull → npm install → npm run build → `sudo systemctl restart remote-agent-tui`.
-- Rollback: `sudo systemctl revert remote-agent-tui` or redeploy previous version.
+- Update: git pull → npm install → npm run build → `sudo systemctl restart tui-serve`.
+- Rollback: `sudo systemctl revert tui-serve` or redeploy previous version.
 
 ### 14.6 Resource Limits
 
@@ -1139,7 +1139,7 @@ ssh pi-1 'sudo systemctl enable --now remote-agent-tui'
 **Flat structure for MVP.** Decompose when you have the code to decompose.
 
 ```text
-remote-agent-tui/
+tui-serve/
   server/
     index.ts              # Fastify + ws server entry point
     auth.ts               # Authentication middleware
@@ -1169,7 +1169,7 @@ remote-agent-tui/
     index.html
   deploy/
     systemd/
-      remote-agent-tui.service  # systemd unit file
+      tui-serve.service  # systemd unit file
     caddy/
       Caddyfile                 # Reverse proxy config
   README.md

@@ -1,6 +1,6 @@
 # Security Guide
 
-Remote Agent TUI controls local terminal sessions. Treat access as equivalent to shell access for the service user.
+TUI Serve controls local terminal sessions. Treat access as equivalent to shell access for the service user.
 
 ## Supported access modes
 
@@ -32,13 +32,13 @@ Then open `http://localhost:5555` locally.
 
 ### Exposed/shared deployments
 
-For shared or untrusted networks, put Remote Agent TUI behind a TLS reverse proxy or identity-aware proxy such as Authelia, OAuth2 Proxy, Tailscale Serve, or an OIDC-capable gateway.
+For shared or untrusted networks, put TUI Serve behind a TLS reverse proxy or identity-aware proxy such as Authelia, OAuth2 Proxy, Tailscale Serve, or an OIDC-capable gateway.
 
 Ensure WebSocket upgrades are forwarded for `/ws`.
 
 ## HTTP limitations
 
-Remote Agent TUI supports HTTP by default for local/trusted-network use. Plain HTTP does not protect traffic from network attackers.
+TUI Serve supports HTTP by default for local/trusted-network use. Plain HTTP does not protect traffic from network attackers.
 
 On plain HTTP, an attacker on the network path can read or modify:
 

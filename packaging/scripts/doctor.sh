@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# doctor.sh — Health check script for remote-agent-tui
+# doctor.sh — Health check script for tui-serve
 # Run this to diagnose common installation issues.
 #
 # Usage: sudo ./packaging/scripts/doctor.sh
-#     or: sudo /usr/share/doc/remote-agent-tui/doctor.sh (after .deb install)
+#     or: sudo /usr/share/doc/tui-serve/doctor.sh (after .deb install)
 
 set -euo pipefail
 
@@ -12,9 +12,9 @@ FAIL=0
 WARN=0
 
 # Detect if we're running from the installed package or from source
-if [ -x /usr/lib/remote-agent-tui/node/bin/node ]; then
-  NODE_BIN="/usr/lib/remote-agent-tui/node/bin/node"
-  APP_DIR="/usr/lib/remote-agent-tui/server"
+if [ -x /usr/lib/tui-serve/node/bin/node ]; then
+  NODE_BIN="/usr/lib/tui-serve/node/bin/node"
+  APP_DIR="/usr/lib/tui-serve/server"
 else
   echo "  ⚠️  Running in development mode (no installed package found)"
   NODE_BIN="$(command -v node 2>/dev/null || echo "")"
@@ -52,16 +52,16 @@ warn() {
   WARN=$((WARN + 1))
 }
 
-echo "=== Remote Agent TUI — Doctor ==="
+echo "=== TUI Serve — Doctor ==="
 echo ""
 
 echo "── Node.js ──"
-if [ -x /usr/lib/remote-agent-tui/node/bin/node ]; then
-  BUNDLED_VERSION=$(/usr/lib/remote-agent-tui/node/bin/node --version 2>/dev/null || echo "unknown")
+if [ -x /usr/lib/tui-serve/node/bin/node ]; then
+  BUNDLED_VERSION=$(/usr/lib/tui-serve/node/bin/node --version 2>/dev/null || echo "unknown")
   echo "  ✅ Bundled Node.js: ${BUNDLED_VERSION}"
   PASS=$((PASS + 1))
 else
-  echo "  ❌ Bundled Node.js not found at /usr/lib/remote-agent-tui/node/bin/node"
+  echo "  ❌ Bundled Node.js not found at /usr/lib/tui-serve/node/bin/node"
   FAIL=$((FAIL + 1))
   # Fall back to system Node
   check "System Node.js" "which node"
@@ -190,22 +190,22 @@ check "tmux >= 3.0" "tmux -V" "3."
 echo ""
 
 echo "── Package ──"
-check "App directory" "test -d /usr/lib/remote-agent-tui/server"
-check "Web assets" "test -d /usr/share/remote-agent-tui/web"
-check "Config file" "test -f /etc/remote-agent-tui/default-config.json"
-check "Env file" "test -f /etc/remote-agent-tui/env"
+check "App directory" "test -d /usr/lib/tui-serve/server"
+check "Web assets" "test -d /usr/share/tui-serve/web"
+check "Config file" "test -f /etc/tui-serve/default-config.json"
+check "Env file" "test -f /etc/tui-serve/env"
 echo ""
 
 echo "── File ownership ──"
-for DIR in /var/lib/remote-agent-tui /var/log/remote-agent-tui; do
+for DIR in /var/lib/tui-serve /var/log/tui-serve; do
   if [ -d "$DIR" ]; then
     OWNER=$(stat -c '%U:%G' "$DIR" 2>/dev/null || echo "unknown")
-    if [ "$OWNER" = "remote-agent-tui:remote-agent-tui" ]; then
-      echo "  ✅ $DIR owned by remote-agent-tui:remote-agent-tui"
+    if [ "$OWNER" = "tui-serve:tui-serve" ]; then
+      echo "  ✅ $DIR owned by tui-serve:tui-serve"
       PASS=$((PASS + 1))
     else
-      echo "  ⚠️  $DIR owned by $OWNER (expected remote-agent-tui:remote-agent-tui)"
-      echo "     Fix: sudo chown -R remote-agent-tui:remote-agent-tui $DIR"
+      echo "  ⚠️  $DIR owned by $OWNER (expected tui-serve:tui-serve)"
+      echo "     Fix: sudo chown -R tui-serve:tui-serve $DIR"
       WARN=$((WARN + 1))
     fi
   fi
@@ -213,8 +213,8 @@ done
 echo ""
 
 echo "── Auth ──"
-if [ -f /etc/remote-agent-tui/env ]; then
-  AUTH_LINE=$(grep '^AUTH_TOKEN=' /etc/remote-agent-tui/env 2>/dev/null || true)
+if [ -f /etc/tui-serve/env ]; then
+  AUTH_LINE=$(grep '^AUTH_TOKEN=' /etc/tui-serve/env 2>/dev/null || true)
   AUTH_VALUE="${AUTH_LINE#AUTH_TOKEN=}"
   if [ -z "$AUTH_VALUE" ]; then
     echo "  ⚠️  No auth token set — service is open to the network"
@@ -229,9 +229,9 @@ fi
 echo ""
 
 echo "── Service ──"
-check "systemd unit" "test -f /lib/systemd/system/remote-agent-tui.service"
-check "service enabled" "systemctl is-enabled remote-agent-tui" "enabled"
-check "service running" "systemctl is-active remote-agent-tui" "active"
+check "systemd unit" "test -f /lib/systemd/system/tui-serve.service"
+check "service enabled" "systemctl is-enabled tui-serve" "enabled"
+check "service running" "systemctl is-active tui-serve" "active"
 echo ""
 
 echo "── Network ──"
@@ -240,8 +240,8 @@ check "Health endpoint" "curl -sf http://localhost:5555/api/health" '"ok"'
 echo ""
 
 echo "── Data ──"
-check "Data directory" "test -d /var/lib/remote-agent-tui"
-if [ -f /var/lib/remote-agent-tui/sessions.db ]; then
+check "Data directory" "test -d /var/lib/tui-serve"
+if [ -f /var/lib/tui-serve/sessions.db ]; then
   echo "  ✅ Database file"
   PASS=$((PASS + 1))
 else
@@ -251,7 +251,7 @@ echo ""
 
 echo "── Recent errors ──"
 if command -v journalctl >/dev/null 2>&1; then
-  ERRORS=$(journalctl -u remote-agent-tui --no-pager -n 10 -p err 2>/dev/null || true)
+  ERRORS=$(journalctl -u tui-serve --no-pager -n 10 -p err 2>/dev/null || true)
   if [ -n "$ERRORS" ]; then
     echo "  Recent error logs:"
     echo "$ERRORS" | head -10 | sed 's/^/    /'
@@ -282,6 +282,6 @@ elif [ "$WARN" -gt 0 ]; then
   echo "⚠️  All critical checks passed, but there are warnings."
   exit 0
 else
-  echo "✅ All checks passed! Remote Agent TUI is healthy."
+  echo "✅ All checks passed! TUI Serve is healthy."
   exit 0
 fi

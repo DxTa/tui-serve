@@ -12,7 +12,7 @@ export default defineConfig({
       registerType: 'autoUpdate',
       injectRegister: 'auto',
       manifest: {
-        name: 'Remote Agent TUI',
+        name: 'TUI Serve',
         short_name: 'AgentTUI',
         description: 'Remote coding agent TUI manager',
         start_url: '/',

@@ -119,7 +119,7 @@ export default function App() {
     return (
       <div className="auth-screen">
         <div className="auth-form" style={{ textAlign: 'center' }}>
-          <h1 style={{ fontSize: 24, fontWeight: 700, marginBottom: 8 }}>🖥️ Remote Agent TUI</h1>
+          <h1 style={{ fontSize: 24, fontWeight: 700, marginBottom: 8 }}>🖥️ TUI Serve</h1>
           <p style={{ color: '#94a3b8', fontSize: 14 }}>Connecting...</p>
         </div>
       </div>
@@ -131,7 +131,7 @@ export default function App() {
     return (
       <div className="auth-screen">
         <div className="auth-form">
-          <h1 style={{ fontSize: 24, fontWeight: 700, marginBottom: 8 }}>🖥️ Remote Agent TUI</h1>
+          <h1 style={{ fontSize: 24, fontWeight: 700, marginBottom: 8 }}>🖥️ TUI Serve</h1>
           <p style={{ color: '#94a3b8', fontSize: 14, marginBottom: 24 }}>
             Enter your auth token to connect
           </p>

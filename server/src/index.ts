@@ -13,7 +13,7 @@ import { setupWebSocket, broadcastSessionUpdateExternal, broadcastSessionObjectE
 import { getCommandLabels } from './allowlist.js';
 import { startHealthCheck, stopHealthCheck, reconcileOnStartup } from './sessions.js';
 import { logEvent, setLogEnabled } from './eventLog.js';
-import { createSessionRequestSchema, killSessionRequestSchema, updateSessionRequestSchema } from '@remote-agent-tui/shared';
+import { createSessionRequestSchema, killSessionRequestSchema, updateSessionRequestSchema } from '@tui-serve/shared';
 import type { Session } from './SessionStore.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -182,8 +182,8 @@ server.get('/api/commands', async () => {
 });
 
 // ── Serve static files (production) ──
-// REMOTE_AGENT_TUI_WEB_DIR overrides the web assets directory (for packaged installs)
-const webDistPath = process.env.REMOTE_AGENT_TUI_WEB_DIR || resolve(__dirname, '..', '..', 'web', 'dist');
+// TUI_SERVE_WEB_DIR overrides the web assets directory (for packaged installs)
+const webDistPath = process.env.TUI_SERVE_WEB_DIR || resolve(__dirname, '..', '..', 'web', 'dist');
 if (existsSync(webDistPath)) {
   logger.info('Serving static files from', { path: webDistPath });
   try {
@@ -240,13 +240,13 @@ if (existsSync(webDistPath)) {
 
 // ── Startup ──
 async function start() {
-  logger.info('Starting Remote Agent TUI Manager', { port: config.port, bindHost: config.bindHost, authRequired: config.authRequired, env: process.env.NODE_ENV });
+  logger.info('Starting TUI Serve Manager', { port: config.port, bindHost: config.bindHost, authRequired: config.authRequired, env: process.env.NODE_ENV });
 
   assertSafeBindAuthConfig({
     bindHost: config.bindHost,
     authToken: config.authToken,
     nodeEnv: process.env.NODE_ENV,
-    insecureAllowNetworkNoAuthForTests: process.env.REMOTE_AGENT_TUI_INSECURE_ALLOW_NETWORK_NO_AUTH_FOR_TESTS === '1',
+    insecureAllowNetworkNoAuthForTests: process.env.TUI_SERVE_INSECURE_ALLOW_NETWORK_NO_AUTH_FOR_TESTS === '1',
   });
 
   // Initialize event log

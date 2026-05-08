@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# build-macos.sh — Build a macOS .tar.gz bundle for remote-agent-tui
+# build-macos.sh — Build a macOS .tar.gz bundle for tui-serve
 #
 # Bundles Node.js 22 LTS so the package is fully self-contained.
-# Produces: packaging/dist/remote-agent-tui_VERSION_macos-arm64.tar.gz
+# Produces: packaging/dist/tui-serve_VERSION_macos-arm64.tar.gz
 #
 # Usage:
 #   ./packaging/build-macos.sh [VERSION] [NODE_VERSION]
@@ -51,7 +51,7 @@ VERSION="${VERSION#v}"
 NODE_TARBALL="node-v${NODE_VERSION}-darwin-${NODE_ARCH}"
 NODE_URL="https://nodejs.org/dist/v${NODE_VERSION}/${NODE_TARBALL}.tar.gz"
 
-PKG_NAME="remote-agent-tui"
+PKG_NAME="tui-serve"
 BUNDLE_NAME="${PKG_NAME}-${VERSION}-macos-${PKG_ARCH}"
 BUILD_DIR="${PROJECT_DIR}/packaging/build"
 BUNDLE_DIR="${BUILD_DIR}/${BUNDLE_NAME}"
@@ -155,7 +155,7 @@ cp -R "${PROJECT_DIR}/tui-web/dist/"* "${BUNDLE_DIR}/web/"
 # -- macOS-specific deploy files --
 mkdir -p "${BUNDLE_DIR}/deploy/launchd"
 mkdir -p "${BUNDLE_DIR}/deploy/scripts"
-cp "${PROJECT_DIR}/packaging/macos/com.remote-agent-tui.plist" \
+cp "${PROJECT_DIR}/packaging/macos/com.tui-serve.plist" \
    "${BUNDLE_DIR}/deploy/launchd/"
 cp "${PROJECT_DIR}/packaging/macos/install-macos.sh" \
    "${BUNDLE_DIR}/deploy/scripts/"
@@ -169,9 +169,9 @@ chmod +x "${BUNDLE_DIR}/deploy/scripts/doctor-macos.sh"
 
 # -- Launcher wrapper --
 mkdir -p "${BUNDLE_DIR}/bin"
-cp "${PROJECT_DIR}/packaging/macos/remote-agent-tui.sh" \
-   "${BUNDLE_DIR}/bin/remote-agent-tui.sh"
-chmod 755 "${BUNDLE_DIR}/bin/remote-agent-tui.sh"
+cp "${PROJECT_DIR}/packaging/macos/tui-serve.sh" \
+   "${BUNDLE_DIR}/bin/tui-serve.sh"
+chmod 755 "${BUNDLE_DIR}/bin/tui-serve.sh"
 
 # -- Documentation --
 cp "${PROJECT_DIR}/README.md" "${BUNDLE_DIR}/"
@@ -200,9 +200,9 @@ fi
 ) >/dev/null
 
 # Check shared package resolved (not a broken symlink)
-if [ -L "${BUNDLE_DIR}/server/node_modules/@remote-agent-tui/shared" ]; then
-  SHARED_TARGET="$(readlink "${BUNDLE_DIR}/server/node_modules/@remote-agent-tui/shared")"
-  if [ ! -e "${BUNDLE_DIR}/server/node_modules/@remote-agent-tui/shared/dist/index.js" ]; then
+if [ -L "${BUNDLE_DIR}/server/node_modules/@tui-serve/shared" ]; then
+  SHARED_TARGET="$(readlink "${BUNDLE_DIR}/server/node_modules/@tui-serve/shared")"
+  if [ ! -e "${BUNDLE_DIR}/server/node_modules/@tui-serve/shared/dist/index.js" ]; then
     echo "❌ Shared package symlink target is broken: ${SHARED_TARGET}" >&2
     echo "   The bundle must contain resolved (not symlinked) shared package." >&2
     exit 1
@@ -300,5 +300,5 @@ echo "║                                                          ║"
 echo "║  Uninstall:                                              ║"
 echo "║    ./deploy/scripts/uninstall-macos.sh                   ║"
 echo "║  Doctor:                                                 ║"
-echo "║    /usr/local/opt/remote-agent-tui/deploy/scripts/doctor-macos.sh ║"
+echo "║    /usr/local/opt/tui-serve/deploy/scripts/doctor-macos.sh ║"
 echo "╚══════════════════════════════════════════════════════════╝"

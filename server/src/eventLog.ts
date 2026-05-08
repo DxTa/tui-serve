@@ -6,7 +6,7 @@ import { resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const dataDir = process.env.REMOTE_AGENT_TUI_DATA_DIR || resolve(__dirname, '..', 'data');
+const dataDir = process.env.TUI_SERVE_DATA_DIR || resolve(__dirname, '..', 'data');
 const LOG_PATH = resolve(dataDir, 'events.jsonl');
 
 let logEnabled = true;

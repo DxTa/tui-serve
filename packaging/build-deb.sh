@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# build-deb.sh — Build a .deb package for remote-agent-tui
+# build-deb.sh — Build a .deb package for tui-serve
 #
 # Bundles Node.js 22 LTS so the package is fully self-contained
 # (no external Node.js dependency required).
@@ -79,7 +79,7 @@ esac
 NODE_TARBALL="node-v${NODE_VERSION}-linux-${NODE_ARCH}"
 NODE_URL="https://nodejs.org/dist/v${NODE_VERSION}/${NODE_TARBALL}.tar.gz"
 
-PKG_NAME="remote-agent-tui"
+PKG_NAME="tui-serve"
 PKG_VERSION="${VERSION}"
 BUILD_DIR="${PROJECT_DIR}/packaging/build"
 PKG_DIR="${BUILD_DIR}/${PKG_NAME}_${PKG_VERSION}_${ARCH}"
@@ -206,7 +206,7 @@ npm ci 2>/dev/null || npm install
 echo "    Workspace dependencies installed ✓"
 
 # ── Stage 1.5: Build shared package ──
-# @remote-agent-tui/shared is a file: dependency of server. Its dist/ must
+# @tui-serve/shared is a file: dependency of server. Its dist/ must
 # exist before the server can type-check and compile.
 echo ">>> Building shared package..."
 cd "${PROJECT_DIR}/packages/shared"
@@ -239,89 +239,89 @@ echo "    Production node_modules ready ✓"
 # ── Stage 5: Assemble package directory ──
 echo ">>> Assembling package directory..."
 
-# -- Bundled Node.js runtime: /usr/lib/remote-agent-tui/node/ --
-mkdir -p "${PKG_DIR}/usr/lib/remote-agent-tui/node/bin"
-cp "${NODE_EXTRACT}/bin/node" "${PKG_DIR}/usr/lib/remote-agent-tui/node/bin/node"
-chmod 755 "${PKG_DIR}/usr/lib/remote-agent-tui/node/bin/node"
+# -- Bundled Node.js runtime: /usr/lib/tui-serve/node/ --
+mkdir -p "${PKG_DIR}/usr/lib/tui-serve/node/bin"
+cp "${NODE_EXTRACT}/bin/node" "${PKG_DIR}/usr/lib/tui-serve/node/bin/node"
+chmod 755 "${PKG_DIR}/usr/lib/tui-serve/node/bin/node"
 
-# -- Application code: /usr/lib/remote-agent-tui/server/ --
-mkdir -p "${PKG_DIR}/usr/lib/remote-agent-tui/server/dist"
-mkdir -p "${PKG_DIR}/usr/lib/remote-agent-tui/server/node_modules"
+# -- Application code: /usr/lib/tui-serve/server/ --
+mkdir -p "${PKG_DIR}/usr/lib/tui-serve/server/dist"
+mkdir -p "${PKG_DIR}/usr/lib/tui-serve/server/node_modules"
 
-cp -R "${PROJECT_DIR}/server/dist/"* "${PKG_DIR}/usr/lib/remote-agent-tui/server/dist/"
-cp "${PROJECT_DIR}/server/package.json" "${PKG_DIR}/usr/lib/remote-agent-tui/server/"
-cp "${PROJECT_DIR}/server/package-lock.json" "${PKG_DIR}/usr/lib/remote-agent-tui/server/"
+cp -R "${PROJECT_DIR}/server/dist/"* "${PKG_DIR}/usr/lib/tui-serve/server/dist/"
+cp "${PROJECT_DIR}/server/package.json" "${PKG_DIR}/usr/lib/tui-serve/server/"
+cp "${PROJECT_DIR}/server/package-lock.json" "${PKG_DIR}/usr/lib/tui-serve/server/"
 
 # Copy root node_modules first (contains hoisted production deps like fastify,
 # ws, zod, node-pty) then overlay server/node_modules on top (workspace symlinks
 # and any non-hoisted deps).
-cp -a "${PROJECT_DIR}/node_modules/." "${PKG_DIR}/usr/lib/remote-agent-tui/server/node_modules/"
+cp -a "${PROJECT_DIR}/node_modules/." "${PKG_DIR}/usr/lib/tui-serve/server/node_modules/"
 if [ -d "${PROJECT_DIR}/server/node_modules" ]; then
-  cp -a "${PROJECT_DIR}/server/node_modules/." "${PKG_DIR}/usr/lib/remote-agent-tui/server/node_modules/"
+  cp -a "${PROJECT_DIR}/server/node_modules/." "${PKG_DIR}/usr/lib/tui-serve/server/node_modules/"
 fi
 
 # Resolve workspace symlinks that would be broken inside the package.
-# npm workspaces creates symlinks like @remote-agent-tui/shared -> ../../packages/shared
+# npm workspaces creates symlinks like @tui-serve/shared -> ../../packages/shared
 # which point outside the node_modules tree. Replace them with real copies.
-PKG_NM="${PKG_DIR}/usr/lib/remote-agent-tui/server/node_modules"
+PKG_NM="${PKG_DIR}/usr/lib/tui-serve/server/node_modules"
 
-if [ -L "${PKG_NM}/@remote-agent-tui/shared" ]; then
+if [ -L "${PKG_NM}/@tui-serve/shared" ]; then
   # Resolve from the source (project) node_modules, not the package copy.
   # The copied symlink's relative target (../../packages/shared) won't resolve
   # inside the package directory, so readlink -f on the copy would fail.
-  SHARED_TARGET="$(readlink -f "${PROJECT_DIR}/node_modules/@remote-agent-tui/shared")"
-  rm "${PKG_NM}/@remote-agent-tui/shared"
-  cp -a "${SHARED_TARGET}" "${PKG_NM}/@remote-agent-tui/shared"
+  SHARED_TARGET="$(readlink -f "${PROJECT_DIR}/node_modules/@tui-serve/shared")"
+  rm "${PKG_NM}/@tui-serve/shared"
+  cp -a "${SHARED_TARGET}" "${PKG_NM}/@tui-serve/shared"
 fi
 
 # Remove root workspace self-link (not needed at runtime)
-rm -f "${PKG_NM}/remote-agent-tui-server"
+rm -f "${PKG_NM}/tui-serve-server"
 
-# -- Frontend static assets: /usr/share/remote-agent-tui/web/ --
-mkdir -p "${PKG_DIR}/usr/share/remote-agent-tui/web"
-cp -R "${PROJECT_DIR}/tui-web/dist/"* "${PKG_DIR}/usr/share/remote-agent-tui/web/"
-node "${PROJECT_DIR}/scripts/validate-web-dist.mjs" "${PKG_DIR}/usr/share/remote-agent-tui/web"
+# -- Frontend static assets: /usr/share/tui-serve/web/ --
+mkdir -p "${PKG_DIR}/usr/share/tui-serve/web"
+cp -R "${PROJECT_DIR}/tui-web/dist/"* "${PKG_DIR}/usr/share/tui-serve/web/"
+node "${PROJECT_DIR}/scripts/validate-web-dist.mjs" "${PKG_DIR}/usr/share/tui-serve/web"
 
 # -- Default config (reference copy) --
-cp "${PROJECT_DIR}/server/default-config.json" "${PKG_DIR}/usr/share/remote-agent-tui/default-config.json"
+cp "${PROJECT_DIR}/server/default-config.json" "${PKG_DIR}/usr/share/tui-serve/default-config.json"
 
-# -- Config directory: /etc/remote-agent-tui/ --
-mkdir -p "${PKG_DIR}/etc/remote-agent-tui"
-cp "${PROJECT_DIR}/server/default-config.json" "${PKG_DIR}/etc/remote-agent-tui/default-config.json"
-cp "${PROJECT_DIR}/server/.env.example" "${PKG_DIR}/etc/remote-agent-tui/env.template"
+# -- Config directory: /etc/tui-serve/ --
+mkdir -p "${PKG_DIR}/etc/tui-serve"
+cp "${PROJECT_DIR}/server/default-config.json" "${PKG_DIR}/etc/tui-serve/default-config.json"
+cp "${PROJECT_DIR}/server/.env.example" "${PKG_DIR}/etc/tui-serve/env.template"
 
-# -- Data directory: /var/lib/remote-agent-tui/ --
-mkdir -p "${PKG_DIR}/var/lib/remote-agent-tui"
+# -- Data directory: /var/lib/tui-serve/ --
+mkdir -p "${PKG_DIR}/var/lib/tui-serve"
 
-# -- Log directory: /var/log/remote-agent-tui/ --
-mkdir -p "${PKG_DIR}/var/log/remote-agent-tui"
+# -- Log directory: /var/log/tui-serve/ --
+mkdir -p "${PKG_DIR}/var/log/tui-serve"
 
 # -- systemd unit --
 mkdir -p "${PKG_DIR}/lib/systemd/system"
-cp "${PROJECT_DIR}/packaging/debian/systemd/remote-agent-tui.service" \
-   "${PKG_DIR}/lib/systemd/system/remote-agent-tui.service"
+cp "${PROJECT_DIR}/packaging/debian/systemd/tui-serve.service" \
+   "${PKG_DIR}/lib/systemd/system/tui-serve.service"
 
 # -- user service helper --
-mkdir -p "${PKG_DIR}/usr/share/remote-agent-tui/systemd"
-cp "${PROJECT_DIR}/packaging/systemd/remote-agent-tui-user.service" \
-   "${PKG_DIR}/usr/share/remote-agent-tui/systemd/remote-agent-tui-user.service"
+mkdir -p "${PKG_DIR}/usr/share/tui-serve/systemd"
+cp "${PROJECT_DIR}/packaging/systemd/tui-serve-user.service" \
+   "${PKG_DIR}/usr/share/tui-serve/systemd/tui-serve-user.service"
 
 # -- Documentation --
-mkdir -p "${PKG_DIR}/usr/share/doc/remote-agent-tui"
-cp "${PROJECT_DIR}/README.md" "${PKG_DIR}/usr/share/doc/remote-agent-tui/"
-cp "${PROJECT_DIR}/PLAN.md" "${PKG_DIR}/usr/share/doc/remote-agent-tui/" 2>/dev/null || true
+mkdir -p "${PKG_DIR}/usr/share/doc/tui-serve"
+cp "${PROJECT_DIR}/README.md" "${PKG_DIR}/usr/share/doc/tui-serve/"
+cp "${PROJECT_DIR}/PLAN.md" "${PKG_DIR}/usr/share/doc/tui-serve/" 2>/dev/null || true
 
 # -- Doctor and install helper scripts --
-cp "${PROJECT_DIR}/packaging/scripts/doctor.sh" "${PKG_DIR}/usr/share/doc/remote-agent-tui/doctor.sh"
-chmod 755 "${PKG_DIR}/usr/share/doc/remote-agent-tui/doctor.sh"
-cp "${PROJECT_DIR}/packaging/scripts/install-user-service.sh" "${PKG_DIR}/usr/share/doc/remote-agent-tui/install-user-service.sh"
-chmod 755 "${PKG_DIR}/usr/share/doc/remote-agent-tui/install-user-service.sh"
+cp "${PROJECT_DIR}/packaging/scripts/doctor.sh" "${PKG_DIR}/usr/share/doc/tui-serve/doctor.sh"
+chmod 755 "${PKG_DIR}/usr/share/doc/tui-serve/doctor.sh"
+cp "${PROJECT_DIR}/packaging/scripts/install-user-service.sh" "${PKG_DIR}/usr/share/doc/tui-serve/install-user-service.sh"
+chmod 755 "${PKG_DIR}/usr/share/doc/tui-serve/install-user-service.sh"
 
 echo "    Files assembled ✓"
 
 # ── Stage 5.5: Package layout sanity checks ──
 echo ">>> Package layout sanity checks..."
-SERVER_DIR="${PKG_DIR}/usr/lib/remote-agent-tui/server"
+SERVER_DIR="${PKG_DIR}/usr/lib/tui-serve/server"
 
 if [ ! -f "${SERVER_DIR}/node_modules/fastify/package.json" ]; then
   echo "❌ Missing runtime dependency: ${SERVER_DIR}/node_modules/fastify/package.json" >&2
@@ -336,16 +336,16 @@ if [ -d "${SERVER_DIR}/node_modules/node_modules" ]; then
 fi
 
 # Verify broken workspace symlinks were fully resolved
-if [ -L "${SERVER_DIR}/node_modules/@remote-agent-tui/shared" ]; then
-  SHARED_LINK_TARGET="$(readlink "${SERVER_DIR}/node_modules/@remote-agent-tui/shared")"
-  echo "❌ Broken workspace symlink still present: @remote-agent-tui/shared -> ${SHARED_LINK_TARGET}" >&2
+if [ -L "${SERVER_DIR}/node_modules/@tui-serve/shared" ]; then
+  SHARED_LINK_TARGET="$(readlink "${SERVER_DIR}/node_modules/@tui-serve/shared")"
+  echo "❌ Broken workspace symlink still present: @tui-serve/shared -> ${SHARED_LINK_TARGET}" >&2
   echo "   This symlink points outside node_modules and will not resolve at runtime." >&2
   exit 1
 fi
 
 (
   cd "${SERVER_DIR}"
-  "${PKG_DIR}/usr/lib/remote-agent-tui/node/bin/node" -e "import('fastify').then(() => console.log('fastify import ok'))"
+  "${PKG_DIR}/usr/lib/tui-serve/node/bin/node" -e "import('fastify').then(() => console.log('fastify import ok'))"
 ) >/dev/null
 
 echo "    Package layout sane ✓"
@@ -367,9 +367,9 @@ Depends: tmux (>= 3.0), libc6 (>= 2.31), libstdc++6 (>= 10)
 Recommends: caddy
 Suggests: tailscale
 Installed-Size: ${INSTALLED_SIZE}
-Maintainer: Remote Agent TUI <noreply@example.com>
-Homepage: https://github.com/example/remote-agent-tui
-Description: Remote Agent TUI Manager
+Maintainer: TUI Serve <noreply@example.com>
+Homepage: https://github.com/DxTa/tui-serve
+Description: TUI Serve Manager
  Browser-based terminal manager for long-running coding agent sessions
  (Claude, Codex, Pi, etc.) on Raspberry Pis and Linux machines.
  .
@@ -381,7 +381,7 @@ EOF
 
 # conffiles
 cat > "${PKG_DIR}/DEBIAN/conffiles" << 'EOF'
-/etc/remote-agent-tui/default-config.json
+/etc/tui-serve/default-config.json
 EOF
 
 # postinst
@@ -491,18 +491,18 @@ echo "    sudo apt install ./${PKG_NAME}_${PKG_VERSION}_${ARCH}.deb"
 echo "    # or: sudo dpkg -i ${PKG_NAME}_${PKG_VERSION}_${ARCH}.deb && sudo apt-get install -f"
 echo ""
 echo "  Install prints your generated auth token automatically."
-echo "  To view it later: sudo cat /etc/remote-agent-tui/env"
+echo "  To view it later: sudo cat /etc/tui-serve/env"
 echo ""
 echo "  Desktop/dev (recommended, agents run as your user):"
-echo "    /usr/share/doc/remote-agent-tui/install-user-service.sh"
+echo "    /usr/share/doc/tui-serve/install-user-service.sh"
 echo ""
 echo "  Headless/appliance (agents run as system user):"
-echo "    sudo systemctl enable --now remote-agent-tui"
+echo "    sudo systemctl enable --now tui-serve"
 echo ""
-echo "  Manage:  sudo systemctl status remote-agent-tui"
-echo "  Logs:     journalctl -u remote-agent-tui -f"
-echo "  Doctor:   sudo /usr/share/doc/remote-agent-tui/doctor.sh"
+echo "  Manage:  sudo systemctl status tui-serve"
+echo "  Logs:     journalctl -u tui-serve -f"
+echo "  Doctor:   sudo /usr/share/doc/tui-serve/doctor.sh"
 echo ""
 echo "  Uninstall:"
-echo "    sudo apt remove remote-agent-tui       # keeps config/data"
-echo "    sudo apt purge remote-agent-tui        # removes everything"
+echo "    sudo apt remove tui-serve       # keeps config/data"
+echo "    sudo apt purge tui-serve        # removes everything"

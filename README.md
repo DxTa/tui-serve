@@ -1,10 +1,10 @@
-# Remote Agent TUI Manager
+# TUI Serve Manager
 
 Run and resume coding-agent terminals from any browser.
 
-![Remote Agent TUI screenshot](docs/assets/remote-agent-tui-screenshot.png)
+![TUI Serve screenshot](docs/assets/tui-serve-screenshot.png)
 
-Remote Agent TUI is a lightweight web UI for long-running coding-agent sessions on Linux, WSL, and macOS. It gives you browser-based terminal access backed by tmux, so sessions survive disconnects, browser reloads, and daemon restarts.
+TUI Serve is a lightweight web UI for long-running coding-agent sessions on Linux, WSL, and macOS. It gives you browser-based terminal access backed by tmux, so sessions survive disconnects, browser reloads, and daemon restarts.
 
 ## Features
 
@@ -37,9 +37,9 @@ Remote Agent TUI is a lightweight web UI for long-running coding-agent sessions 
 Install the `.deb` release artifact, then enable the per-user service:
 
 ```bash
-sudo apt install ./remote-agent-tui_<version>_<arch>.deb
-/usr/share/doc/remote-agent-tui/install-user-service.sh
-systemctl --user status remote-agent-tui
+sudo apt install ./tui-serve_<version>_<arch>.deb
+/usr/share/doc/tui-serve/install-user-service.sh
+systemctl --user status tui-serve
 ```
 
 Open `http://<host>:5555` and enter your auth token.
@@ -51,15 +51,15 @@ macOS is expected to be supported, but has not been fully tested.
 Install the macOS release artifact, then run the bundled installer:
 
 ```bash
-tar xzf remote-agent-tui-<version>-macos-arm64.tar.gz
-cd remote-agent-tui-<version>
+tar xzf tui-serve-<version>-macos-arm64.tar.gz
+cd tui-serve-<version>
 ./deploy/scripts/install-macos.sh
 ```
 
 Run diagnostics if needed:
 
 ```bash
-/usr/local/opt/remote-agent-tui/deploy/scripts/doctor-macos.sh
+/usr/local/opt/tui-serve/deploy/scripts/doctor-macos.sh
 ```
 
 ### From source
@@ -67,7 +67,7 @@ Run diagnostics if needed:
 Use source install for development or unreleased platforms:
 
 ```bash
-cd remote-agent-tui
+cd tui-serve
 npm install
 npm run build
 rm -rf web/dist && mkdir -p web && cp -R tui-web/dist web/dist
@@ -86,7 +86,7 @@ AUTH_TOKEN=replace-with-a-long-random-token PORT=5555 NODE_ENV=production npm st
 ## Development
 
 ```bash
-cd remote-agent-tui
+cd tui-serve
 npm install
 
 cd server
@@ -118,7 +118,7 @@ Commands are configured by ID. Clients send `commandId` such as `pi`, `claude`, 
 
 ## Security
 
-Treat Remote Agent TUI access as shell access for the service user.
+Treat TUI Serve access as shell access for the service user.
 
 - Use localhost, SSH tunnels, trusted LAN, VPN, or Tailscale.
 - Do **not** expose plain HTTP directly to the public internet.

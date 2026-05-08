@@ -1,17 +1,17 @@
-Source: remote-agent-tui
+Source: tui-serve
 Section: web
 Priority: optional
-Maintainer: Remote Agent TUI <noreply@example.com>
+Maintainer: TUI Serve <noreply@example.com>
 Build-Depends: debhelper (>= 12), build-essential, python3, make, g++ (>= 10)
 Standards-Version: 4.5.1
-Homepage: https://github.com/example/remote-agent-tui
+Homepage: https://github.com/DxTa/tui-serve
 
-Package: remote-agent-tui
+Package: tui-serve
 Architecture: amd64
 Depends: tmux (>= 3.0), libc6 (>= 2.31), libstdc++6 (>= 10)
 Recommends: caddy
 Suggests: tailscale
-Description: Remote Agent TUI Manager
+Description: TUI Serve Manager
  Browser-based terminal manager for long-running coding agent sessions
  (Claude, Codex, Pi, etc.) on Raspberry Pis and Linux machines.
  .

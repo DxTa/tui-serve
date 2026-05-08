@@ -1,14 +1,14 @@
 #!/bin/bash
-# uninstall-macos.sh — Uninstall Remote Agent TUI from macOS
+# uninstall-macos.sh — Uninstall TUI Serve from macOS
 
 set -euo pipefail
 
-INSTALL_BASE="/usr/local/opt/remote-agent-tui"
-CONFIG_DIR="/usr/local/etc/remote-agent-tui"
-DATA_DIR="/usr/local/var/lib/remote-agent-tui"
-PLIST="$HOME/Library/LaunchAgents/com.remote-agent-tui.plist"
+INSTALL_BASE="/usr/local/opt/tui-serve"
+CONFIG_DIR="/usr/local/etc/tui-serve"
+DATA_DIR="/usr/local/var/lib/tui-serve"
+PLIST="$HOME/Library/LaunchAgents/com.tui-serve.plist"
 
-echo "=== Remote Agent TUI — macOS Uninstall ==="
+echo "=== TUI Serve — macOS Uninstall ==="
 echo ""
 
 # Stop service
@@ -33,9 +33,9 @@ echo ""
 if [[ $REPLY =~ ^[Yy]$ ]]; then
   sudo rm -rf "$CONFIG_DIR"
   sudo rm -rf "$DATA_DIR"
-  sudo rm -rf "/usr/local/var/log/remote-agent-tui"
-  sudo rm -f /usr/local/var/log/remote-agent-tui.log
-  sudo rm -f /usr/local/var/log/remote-agent-tui.err
+  sudo rm -rf "/usr/local/var/log/tui-serve"
+  sudo rm -f /usr/local/var/log/tui-serve.log
+  sudo rm -f /usr/local/var/log/tui-serve.err
   echo "    Config and data removed ✓"
 else
   echo "    Config kept at: $CONFIG_DIR"

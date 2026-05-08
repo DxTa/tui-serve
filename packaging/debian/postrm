@@ -1,5 +1,5 @@
 #!/bin/sh
-# postrm: post-remove script for remote-agent-tui
+# postrm: post-remove script for tui-serve
 # Follows dh_installsystemd canonical patterns (Debian Policy §9.3)
 set -e
 
@@ -11,25 +11,25 @@ fi
 case "$1" in
   purge)
     # Remove data and config on purge
-    rm -rf /var/lib/remote-agent-tui
-    rm -rf /var/log/remote-agent-tui
-    rm -f /etc/remote-agent-tui/env
-    rm -f /etc/remote-agent-tui/default-config.json
-    rmdir /etc/remote-agent-tui 2>/dev/null || true
+    rm -rf /var/lib/tui-serve
+    rm -rf /var/log/tui-serve
+    rm -f /etc/tui-serve/env
+    rm -f /etc/tui-serve/default-config.json
+    rmdir /etc/tui-serve 2>/dev/null || true
 
     # Remove system user
-    if getent passwd remote-agent-tui >/dev/null 2>&1; then
-      deluser --quiet remote-agent-tui
+    if getent passwd tui-serve >/dev/null 2>&1; then
+      deluser --quiet tui-serve
     fi
 
     # Unmask and clean up systemd state
     if [ -n "$DEB_SYSTEMD_HELPER" ]; then
-      "$DEB_SYSTEMD_HELPER" unmask remote-agent-tui.service >/dev/null 2>&1 || true
-      "$DEB_SYSTEMD_HELPER" disable remote-agent-tui.service >/dev/null 2>&1 || true
-      "$DEB_SYSTEMD_HELPER" update-state remote-agent-tui.service >/dev/null 2>&1 || true
+      "$DEB_SYSTEMD_HELPER" unmask tui-serve.service >/dev/null 2>&1 || true
+      "$DEB_SYSTEMD_HELPER" disable tui-serve.service >/dev/null 2>&1 || true
+      "$DEB_SYSTEMD_HELPER" update-state tui-serve.service >/dev/null 2>&1 || true
     else
-      systemctl unmask remote-agent-tui.service >/dev/null 2>&1 || true
-      systemctl disable remote-agent-tui.service >/dev/null 2>&1 || true
+      systemctl unmask tui-serve.service >/dev/null 2>&1 || true
+      systemctl disable tui-serve.service >/dev/null 2>&1 || true
     fi
     ;;
 
@@ -37,9 +37,9 @@ case "$1" in
     # Mask the unit so it can't be accidentally activated while removed
     # (but not purged — postrm purge handles that)
     if [ -n "$DEB_SYSTEMD_HELPER" ]; then
-      "$DEB_SYSTEMD_HELPER" mask remote-agent-tui.service >/dev/null 2>&1 || true
+      "$DEB_SYSTEMD_HELPER" mask tui-serve.service >/dev/null 2>&1 || true
     else
-      systemctl mask remote-agent-tui.service >/dev/null 2>&1 || true
+      systemctl mask tui-serve.service >/dev/null 2>&1 || true
     fi
     ;;
 

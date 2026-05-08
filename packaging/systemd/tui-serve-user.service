@@ -1,0 +1,28 @@
+[Unit]
+Description=TUI Serve Manager (user)
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/.local/share/tui-serve/server
+
+# Uses bundled Node.js installed by install-user-service.sh
+ExecStart=%h/.local/share/tui-serve/node/bin/node dist/index.js
+
+Restart=on-failure
+RestartSec=5
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+EnvironmentFile=-%h/.config/tui-serve/env
+Environment=NODE_ENV=production
+Environment=TUI_SERVE_CONFIG=%h/.config/tui-serve/default-config.json
+Environment=TUI_SERVE_DATA_DIR=%h/.local/share/tui-serve/data
+Environment=TUI_SERVE_WEB_DIR=%h/.local/share/tui-serve/web
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=tui-serve
+
+[Install]
+WantedBy=default.target

@@ -1,7 +1,7 @@
 // WebSocket client with full protocol support
 // Binary (0x00) for terminal I/O, JSON (0x01) for control
 
-import { PROTOCOL_VERSION, clientMessageSchema, serverMessageSchema, type ClientMessage, type ServerMessage } from '@remote-agent-tui/shared';
+import { PROTOCOL_VERSION, clientMessageSchema, serverMessageSchema, type ClientMessage, type ServerMessage } from '@tui-serve/shared';
 import type { Session, SessionStatus, ConnectionState } from './types';
 import { getAuthToken } from './auth';
 const FRAME_BINARY = 0x00;

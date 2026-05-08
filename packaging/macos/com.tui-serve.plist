@@ -3,20 +3,20 @@
 <plist version="1.0">
 <dict>
   <key>Label</key>
-  <string>com.remote-agent-tui</string>
+  <string>com.tui-serve</string>
   <key>WorkingDirectory</key>
-  <string>/usr/local/opt/remote-agent-tui/server</string>
+  <string>/usr/local/opt/tui-serve/server</string>
   <key>ProgramArguments</key>
   <array>
-    <string>/usr/local/opt/remote-agent-tui/bin/remote-agent-tui.sh</string>
+    <string>/usr/local/opt/tui-serve/bin/tui-serve.sh</string>
   </array>
   <key>RunAtLoad</key>
   <true/>
   <key>KeepAlive</key>
   <true/>
   <key>StandardOutPath</key>
-  <string>/usr/local/var/log/remote-agent-tui/remote-agent-tui.log</string>
+  <string>/usr/local/var/log/tui-serve/tui-serve.log</string>
   <key>StandardErrorPath</key>
-  <string>/usr/local/var/log/remote-agent-tui/remote-agent-tui.err</string>
+  <string>/usr/local/var/log/tui-serve/tui-serve.err</string>
 </dict>
 </plist>

@@ -1,7 +1,7 @@
 // Auth token management
 
-const AUTH_TOKEN_KEY = 'remote-agent-tui-token';
-const AUTH_REQUIRED_KEY = 'remote-agent-tui-auth-required';
+const AUTH_TOKEN_KEY = 'tui-serve-token';
+const AUTH_REQUIRED_KEY = 'tui-serve-auth-required';
 
 export function getAuthToken(): string | null {
   return localStorage.getItem(AUTH_TOKEN_KEY);

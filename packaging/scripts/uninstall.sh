@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# uninstall.sh — Clean uninstall of remote-agent-tui
+# uninstall.sh — Clean uninstall of tui-serve
 # Removes the package and optionally all data and config.
 #
 # Usage: sudo ./packaging/scripts/uninstall.sh [--purge]
@@ -18,35 +18,35 @@ if [ "${1:-}" = "--purge" ]; then
   PURGE=true
 fi
 
-echo "=== Uninstalling Remote Agent TUI ==="
+echo "=== Uninstalling TUI Serve ==="
 echo ""
 
 # Stop service first
-if systemctl is-active remote-agent-tui >/dev/null 2>&1; then
+if systemctl is-active tui-serve >/dev/null 2>&1; then
   echo "Stopping service..."
-  systemctl stop remote-agent-tui
+  systemctl stop tui-serve
 fi
 
-if systemctl is-enabled remote-agent-tui >/dev/null 2>&1; then
+if systemctl is-enabled tui-serve >/dev/null 2>&1; then
   echo "Disabling service..."
-  systemctl disable remote-agent-tui
+  systemctl disable tui-serve
 fi
 
 # Remove systemd override if present
-if [ -d /etc/systemd/system/remote-agent-tui.service.d ]; then
+if [ -d /etc/systemd/system/tui-serve.service.d ]; then
   echo "Removing systemd overrides..."
-  rm -rf /etc/systemd/system/remote-agent-tui.service.d
+  rm -rf /etc/systemd/system/tui-serve.service.d
 fi
 
 systemctl daemon-reload
 
 # Remove the package
 echo "Removing package..."
-if dpkg -s remote-agent-tui >/dev/null 2>&1; then
+if dpkg -s tui-serve >/dev/null 2>&1; then
   if $PURGE; then
-    apt-get purge -y remote-agent-tui
+    apt-get purge -y tui-serve
   else
-    apt-get remove -y remote-agent-tui
+    apt-get remove -y tui-serve
   fi
 else
   echo "Package not installed via dpkg."
@@ -55,15 +55,15 @@ fi
 # Handle remaining files
 if $PURGE; then
   echo "Purging data and config..."
-  rm -rf /var/lib/remote-agent-tui
-  rm -rf /var/log/remote-agent-tui
-  rm -rf /etc/remote-agent-tui
+  rm -rf /var/lib/tui-serve
+  rm -rf /var/log/tui-serve
+  rm -rf /etc/tui-serve
   echo "All data, config, and logs removed."
 else
   echo "Config and data preserved in:"
-  echo "  /etc/remote-agent-tui/"
-  echo "  /var/lib/remote-agent-tui/"
-  echo "  /var/log/remote-agent-tui/"
+  echo "  /etc/tui-serve/"
+  echo "  /var/lib/tui-serve/"
+  echo "  /var/log/tui-serve/"
   echo "Use --purge to remove these as well."
 fi
 

@@ -1,5 +1,5 @@
 {
-  "name": "remote-agent-tui",
+  "name": "tui-serve",
   "private": true,
   "type": "module",
   "workspaces": [

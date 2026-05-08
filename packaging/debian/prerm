@@ -1,5 +1,5 @@
 #!/bin/sh
-# prerm: pre-remove script for remote-agent-tui
+# prerm: pre-remove script for tui-serve
 # Follows dh_installsystemd canonical patterns (Debian Policy §9.3)
 set -e
 
@@ -8,9 +8,9 @@ case "$1" in
     # Stop the service before removal/upgrade
     if [ -z "${DPKG_ROOT:-}" ] && [ -d /run/systemd/system ]; then
       if command -v deb-systemd-invoke >/dev/null 2>&1; then
-        deb-systemd-invoke stop remote-agent-tui >/dev/null 2>&1 || true
+        deb-systemd-invoke stop tui-serve >/dev/null 2>&1 || true
       else
-        systemctl stop remote-agent-tui >/dev/null 2>&1 || true
+        systemctl stop tui-serve >/dev/null 2>&1 || true
       fi
     fi
     ;;

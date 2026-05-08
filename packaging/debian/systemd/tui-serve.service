@@ -1,0 +1,44 @@
+[Unit]
+Description=TUI Serve Manager
+After=network.target tailscaled.service
+Wants=tailscaled.service
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=tui-serve
+Group=tui-serve
+WorkingDirectory=/usr/lib/tui-serve/server
+
+# Uses bundled Node.js — no external Node.js installation required
+# ExecStartPre: fast-fail on broken node binary (wrong arch, missing libs)
+ExecStartPre=/usr/lib/tui-serve/node/bin/node --version
+ExecStart=/usr/lib/tui-serve/node/bin/node dist/index.js
+
+Restart=on-failure
+RestartSec=5
+
+# Environment — loaded from /etc/tui-serve/env
+# Override in /etc/systemd/system/tui-serve.service.d/override.conf
+EnvironmentFile=-/etc/tui-serve/env
+Environment=NODE_ENV=production
+
+# Paths for packaged installation
+Environment=TUI_SERVE_CONFIG=/etc/tui-serve/default-config.json
+Environment=TUI_SERVE_DATA_DIR=/var/lib/tui-serve
+Environment=TUI_SERVE_WEB_DIR=/usr/share/tui-serve/web
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=tui-serve
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/var/lib/tui-serve /var/log/tui-serve
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

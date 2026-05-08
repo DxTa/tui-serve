@@ -27,9 +27,11 @@ export default function TerminalView({ session, host, onBack, onSessionUpdate }:
   const currentSessionIdRef = useRef(session.id);
   const attachedSessionIdRef = useRef(session.id);
 
-  // Use window.location.origin in dev (goes through Vite proxy)
-  // In production, fall back to host's address
-  const hostUrl = host.address === 'localhost' && host.port === 3000
+  // When host is 'localhost' (the server that served this page), always use
+  // window.location.origin — this works correctly regardless of access method
+  // (localhost, LAN IP, Tailscale hostname, etc.). Only remote hosts need
+  // an explicit URL constructed from their address/port.
+  const hostUrl = host.address === 'localhost'
     ? window.location.origin
     : `${window.location.protocol}//${host.address}:${host.port}`;
 

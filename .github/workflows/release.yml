@@ -4,6 +4,11 @@ on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
+  workflow_run:
+    workflows: ["Bump Version"]
+    types: [completed]
+    branches: [main]
 
 permissions:
   contents: write
@@ -14,9 +19,14 @@ jobs:
     # Pin runner image; actual .deb build runs inside packaging/build-deb.sh's
     # ubuntu:20.04 Docker container for glibc compatibility.
     runs-on: ubuntu-24.04
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    outputs:
+      version: ${{ steps.version.outputs.VERSION }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Setup Node.js 22
         uses: actions/setup-node@v4
@@ -30,9 +40,23 @@ jobs:
       - name: Verify Docker is available
         run: docker --version
 
-      - name: Get version from tag
+      - name: Resolve version
         id: version
-        run: echo "VERSION=${GITHUB_REF_NAME#v}" >> $GITHUB_OUTPUT
+        run: |
+          if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+            VERSION="${GITHUB_REF_NAME#v}"
+          else
+            VERSION=$(node -p "require('./server/package.json').version")
+          fi
+          echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Create and push tag (if not tag-triggered)
+        if: '!startsWith(github.ref, ''refs/tags/v'')'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "v${{ steps.version.outputs.VERSION }}" -m "v${{ steps.version.outputs.VERSION }}"
+          git push origin "v${{ steps.version.outputs.VERSION }}"
 
       - name: Build .deb package
         run: |
@@ -101,9 +125,9 @@ jobs:
     needs: [build-deb]
     runs-on: ubuntu-24.04
     steps:
-      - name: Get version from tag
+      - name: Resolve version
         id: version
-        run: echo "VERSION=${GITHUB_REF_NAME#v}" >> $GITHUB_OUTPUT
+        run: echo "VERSION=${{ needs.build-deb.outputs.version }}" >> $GITHUB_OUTPUT
 
       - name: Download .deb artifact
         uses: actions/download-artifact@v4
@@ -123,48 +147,36 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.ref_name }}
-          name: Release ${{ github.ref_name }}
+          tag_name: v${{ steps.version.outputs.VERSION }}
+          name: Release v${{ steps.version.outputs.VERSION }}
           draft: false
-          prerelease: ${{ contains(github.ref_name, '-rc') || contains(github.ref_name, '-beta') || contains(github.ref_name, '-alpha') }}
+          prerelease: ${{ contains(steps.version.outputs.VERSION, '-rc') || contains(steps.version.outputs.VERSION, '-beta') || contains(steps.version.outputs.VERSION, '-alpha') }}
           generate_release_notes: true
           files: release-artifacts/*
           body: |
-            ## TUI Serve ${{ github.ref_name }}
-
-            ### Downloads
-
-            | Platform | File | Install |
-            |---|---|---|
-            | Linux (amd64) | `.deb` | `sudo dpkg -i *.deb && sudo apt-get install -f` |
-            | macOS (arm64) | `.tar.gz` | See included `install-macos.sh` |
-
-            ### Quick Start (Linux)
+            ## Install (Linux amd64)
 
             ```bash
-            sudo dpkg -i tui-serve_*_amd64.deb
-            sudo apt-get install -f   # resolve deps (tmux, libc)
-            # Service starts automatically on port 5555
-            # No auth required by default — set AUTH_TOKEN to enable
+            sudo apt install ./tui-serve_${{ steps.version.outputs.VERSION }}_amd64.deb
+            /usr/share/doc/tui-serve/install-user-service.sh
+            systemctl --user status tui-serve
             ```
 
-            ### Quick Start (macOS)
+            Open `http://<host>:5555` and enter your auth token.
+
+            ### macOS (arm64) — coming soon
 
             ```bash
-            tar xzf tui-serve_*-macos-arm64.tar.gz
-            cd tui-serve-*/
+            tar xzf tui-serve-${{ steps.version.outputs.VERSION }}-macos-arm64.tar.gz
+            cd tui-serve-${{ steps.version.outputs.VERSION }}
             ./deploy/scripts/install-macos.sh
             ```
 
-            **Note:** macOS may quarantine the downloaded archive. If you see "cannot be opened because it is from an unidentified developer", run:
+            Run diagnostics if needed:
+
             ```bash
-            xattr -cr /usr/local/opt/tui-serve
+            /usr/local/opt/tui-serve/deploy/scripts/doctor-macos.sh
             ```
-            The installer handles this automatically, but you may need it if you run the binary directly.
-
-            ### Checksums
-
-            See `checksums-*.txt` files in the release assets for SHA256 checksums.
 
             ### What's Changed
 

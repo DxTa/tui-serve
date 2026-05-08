@@ -65,13 +65,8 @@ jobs:
           fi
           echo "✅ Versions synced: v$SERVER_V"
 
-      - name: Commit version bump
+      - name: Commit and push version bump
         run: |
           git add server/package.json server/package-lock.json tui-web/package.json tui-web/package-lock.json
           git commit -m "chore(release): v${{ steps.bump.outputs.version }}"
-
-      - name: Create and push tag
-        run: |
-          git tag -a "v${{ steps.bump.outputs.version }}" -m "v${{ steps.bump.outputs.version }}"
           git push origin HEAD:refs/heads/main
-          git push origin "v${{ steps.bump.outputs.version }}"

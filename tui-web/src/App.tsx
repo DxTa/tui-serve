@@ -1,70 +1,40 @@
 import { useState, useEffect, useCallback } from 'react';
 import { api } from './lib/apiClient';
-import { getAuthToken, setAuthToken, hasAuthToken, setAuthRequired, isAuthRequired } from './lib/auth';
+import { setAuthToken } from './lib/auth';
 import { syncFromServer, requestPersistentStorage } from './lib/sync';
 import { db } from './lib/db';
 import { useLiveQuery } from 'dexie-react-hooks';
 import type { Session, Host } from './lib/types';
 import Dashboard from './components/Dashboard';
 import TerminalView from './components/TerminalView';
-
-// Simple hash-based routing:
-//   /           → dashboard
-//   /s/{id}     → terminal view for session {id}
-function getSessionIdFromHash(): string | null {
-  const hash = window.location.hash.replace('#', '');
-  if (hash.startsWith('/s/')) {
-    return hash.substring(3);
-  }
-  return null;
-}
-
-function setHash(hash: string) {
-  window.location.hash = hash;
-}
+import { useAuthProbe } from './hooks/useAuthProbe';
+import { useHashRoute } from './hooks/useHashRoute';
 
 export default function App() {
-  const [authed, setAuthed] = useState(hasAuthToken() || !isAuthRequired());
-  const [token, setToken] = useState(getAuthToken() || '');
-  const [authError, setAuthError] = useState('');
+  const { authed, setAuthed, token, setToken, authError, setAuthError, checkingAuth } = useAuthProbe();
   const [selectedSession, setSelectedSession] = useState<Session | null>(null);
   const [selectedHost, setSelectedHost] = useState<Host | null>(null);
   const [loading, setLoading] = useState(false);
-  const [checkingAuth, setCheckingAuth] = useState(true); // initial auth probe
+  const { sessionId: currentSessionId, view, setHash } = useHashRoute();
 
   // Use Dexie's useLiveQuery for reactive session list
   const localSessions = useLiveQuery(() => db.sessions.orderBy('createdAt').reverse().toArray(), []) || [];
-
-  // Derive view from URL hash
-  const currentSessionId = getSessionIdFromHash();
-  const view: 'dashboard' | 'terminal' = currentSessionId ? 'terminal' : 'dashboard';
 
   // Request persistent storage on first load
   useEffect(() => {
     requestPersistentStorage();
   }, []);
 
-  // Probe server to check if auth is required
+  // Prevent accidental window/tab close, especially in PWA standalone mode
+  // where Ctrl+W closes the window without warning.
   useEffect(() => {
-    const probeAuth = async () => {
-      try {
-        const health = await api.health();
-        setAuthRequired(health.authRequired ?? false);
-        if (!health.authRequired) {
-          // No auth needed — go straight to dashboard
-          setAuthed(true);
-        } else if (hasAuthToken()) {
-          // Auth required but we have a stored token — try it
-          setAuthed(true);
-        }
-        // Otherwise: auth required, no token — show auth screen
-      } catch {
-        // Can't reach server — stay on auth screen as fallback
-      } finally {
-        setCheckingAuth(false);
-      }
+    const handler = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      // Modern browsers require returnValue to be set
+      return (e.returnValue = '');
     };
-    probeAuth();
+    window.addEventListener('beforeunload', handler);
+    return () => window.removeEventListener('beforeunload', handler);
   }, []);
 
   const loadSessions = useCallback(async () => {
@@ -125,18 +95,13 @@ export default function App() {
     }
   }, [authed, currentSessionId]);
 
-  // Handle browser back/forward
+  // Clear selected terminal state when routing back to dashboard.
   useEffect(() => {
-    const handleHashChange = () => {
-      const sid = getSessionIdFromHash();
-      if (!sid) {
-        setSelectedSession(null);
-        setSelectedHost(null);
-      }
-    };
-    window.addEventListener('hashchange', handleHashChange);
-    return () => window.removeEventListener('hashchange', handleHashChange);
-  }, []);
+    if (!currentSessionId) {
+      setSelectedSession(null);
+      setSelectedHost(null);
+    }
+  }, [currentSessionId]);
 
   // Loading probe
   if (checkingAuth) {

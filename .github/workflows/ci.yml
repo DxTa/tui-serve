@@ -1,0 +1,30 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            server/package-lock.json
+            tui-web/package-lock.json
+      - name: Install root dependencies
+        run: npm ci
+      - name: Install server dependencies
+        run: npm ci
+        working-directory: server
+      - name: Install web dependencies
+        run: npm ci
+        working-directory: tui-web
+      - name: Run CI
+        run: npm run ci

@@ -18,6 +18,7 @@ export interface HostConfig {
 
 export interface Config {
   port: number;
+  bindHost: string;
   authToken: string;
   authRequired: boolean;
   commands: CommandAllowlistEntry[];
@@ -97,7 +98,8 @@ const commandsWithHome = defaults.commands.map((cmd) => {
 
 export const config: Config = {
   port: parseInt(process.env.PORT || '5555', 10),
-  authToken: process.env.AUTH_TOKEN || '',  // Empty = no auth (for trusted networks); set a token to require auth
+  bindHost: process.env.BIND_HOST || process.env.REMOTE_AGENT_TUI_BIND_HOST || '0.0.0.0',
+  authToken: process.env.AUTH_TOKEN || '',
   authRequired: !!(process.env.AUTH_TOKEN && process.env.AUTH_TOKEN.length > 0),
   commands: commandsWithHome,
   hosts: defaults.hosts,

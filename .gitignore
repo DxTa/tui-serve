@@ -14,7 +14,7 @@ web/.vite/
 tui-web/.vite/
 node_modules/.vite/
 
-# SQLite database (runtime data)
+# Runtime data
 server/data/
 
 # Environment variables (contains auth tokens)

@@ -1,6 +1,5 @@
-// Global styles — dark theme
+/* Global styles — dark theme */
 
-const styles = `
   * {
     margin: 0;
     padding: 0;
@@ -462,7 +461,6 @@ const styles = `
     padding-top: 0;
     border-top: none;
   }
-  }
 
   .form-error {
     color: #ef4444;
@@ -596,6 +594,3 @@ const styles = `
       font-size: 18px !important;
     }
   }
-`;
-
-export default styles;

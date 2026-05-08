@@ -165,21 +165,6 @@ echo ""
 
 echo "── Native modules ──"
 if [ -n "$NODE_BIN" ] && [ -n "$APP_DIR" ]; then
-  # Test better-sqlite3 loadability
-  if [ -d "${APP_DIR}/node_modules/better-sqlite3" ]; then
-    if NODE_PATH="${APP_DIR}/node_modules" "$NODE_BIN" -e "require('better-sqlite3')" 2>/dev/null; then
-      echo "  ✅ better-sqlite3: loads successfully"
-      PASS=$((PASS + 1))
-    else
-      echo "  ❌ better-sqlite3: FAILED to load"
-      echo "     This usually means a glibc or libstdc++ ABI mismatch."
-      echo "     Run: ${NODE_BIN} -e \"require('better-sqlite3')\" for details"
-      FAIL=$((FAIL + 1))
-    fi
-  else
-    warn "better-sqlite3 not found in node_modules"
-  fi
-
   # Test node-pty loadability
   if [ -d "${APP_DIR}/node_modules/node-pty" ]; then
     if (cd "${APP_DIR}" && "$NODE_BIN" -e "try { require('@homebridge/node-pty-prebuilt-multiarch') } catch (_) { require('node-pty') }") 2>/dev/null; then

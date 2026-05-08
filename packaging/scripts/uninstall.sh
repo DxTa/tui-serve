@@ -4,7 +4,7 @@
 #
 # Usage: sudo ./packaging/scripts/uninstall.sh [--purge]
 #
-#   --purge  Also remove config files, data directory, and SQLite database
+#   --purge  Also remove config files and data directory
 
 set -euo pipefail
 

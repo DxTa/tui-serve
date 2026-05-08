@@ -20,4 +20,4 @@ Description: Remote Agent TUI Manager
  command allowlist security, and systemd auto-start.
  .
  Requires glibc >= 2.31 (Ubuntu 20.04+, Debian 11+) and libstdc++ >= 10.
- Native modules (better-sqlite3, node-pty) are compiled for amd64 only.
+ Native modules (node-pty) are compiled for amd64 only.

@@ -233,7 +233,7 @@ Basic production install does **not** require Caddy/nginx.
 
 Current repo does **not** build a single executable. Packing server + frontend into one executable is possible in theory, but not recommended as the first production path.
 
-Reason: server uses native Node modules (`node-pty`, `better-sqlite3`) and external runtime tools (`tmux`, agent CLIs). Node single-executable tooling (`node --experimental-sea-config`, `pkg`, `nexe`) does not reliably solve native addon loading, per-platform ABI compatibility, or required host tools. Users still need tmux and native build/runtime dependencies.
+Reason: server uses native Node modules (`node-pty`) and external runtime tools (`tmux`, agent CLIs). Node single-executable tooling (`node --experimental-sea-config`, `pkg`, `nexe`) does not reliably solve native addon loading, per-platform ABI compatibility, or required host tools. Users still need tmux and native build/runtime dependencies.
 
 Recommended packaging roadmap:
 
@@ -385,7 +385,7 @@ Browser (xterm.js in React PWA)
 Node.js daemon (one per machine)
     ⇅ node-pty → tmux attach-session
     ⇅ tmux sessions (persistent — survive disconnects & server restarts)
-    ⇐ SQLite (session metadata, reconciled on startup)
+    ⇐ tmux options (session metadata, reconciled on startup)
 ```
 
 - **One daemon per machine** — no SSH complexity, no central gateway
@@ -418,7 +418,7 @@ WebSocket: connect to `/ws?token=<token>` — binary frames for terminal I/O, JS
 
 Use the Linux production install above. Raspberry Pi OS follows the same systemd path — install the `.deb` package or do a manual install.
 
-Native modules (`node-pty`, `better-sqlite3`) must be rebuilt on the Pi:
+Native modules (`node-pty`) must be rebuilt on the Pi:
 
 ```bash
 cd /opt/remote-agent-tui/server
@@ -509,8 +509,7 @@ remote-agent-tui/
     auth.ts               # Bearer token auth middleware
     config.ts             # Server config (env vars + defaults)
     protocol.ts           # WebSocket protocol types (binary + JSON)
-    db.ts                 # SQLite DB setup (WAL mode, schema-on-startup)
-    SessionStore.ts       # Session data store
+    SessionStore.ts       # tmux-backed session data store
     sessions.ts           # Session manager + state machine + reconciliation
     agentSessionId.ts     # Agent session ID extraction/resume helpers
     eventLog.ts           # Structured event logging
@@ -549,7 +548,7 @@ remote-agent-tui/
 
 | Problem | Solution |
 |---|---|
-| `node-pty` or `better-sqlite3` build fails | Install build tools (`build-essential python3 make g++` on Linux, Xcode CLI tools on macOS), then run `npm rebuild` in `server/` |
+| `node-pty` build fails | Install build tools (`build-essential python3 make g++` on Linux, Xcode CLI tools on macOS), then run `npm rebuild` in `server/` |
 | tmux not found | Install tmux (`sudo apt install -y tmux`, `brew install tmux`) |
 | Auth token rejected | Check `.env` or service environment matches token entered in browser |
 | Frontend returns 404 in production | Ensure `tui-web/dist` was copied to `web/dist` and server was restarted |

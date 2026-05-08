@@ -1,13 +1,27 @@
 {
   "name": "remote-agent-tui",
   "private": true,
+  "type": "module",
+  "workspaces": [
+    "packages/shared",
+    "server",
+    "tui-web"
+  ],
   "scripts": {
     "dev": "concurrently -n server,web -c blue,green \"npm run dev --prefix server\" \"npm run dev --prefix tui-web\"",
     "dev:server": "npm run dev --prefix server",
     "dev:web": "npm run dev --prefix tui-web",
-    "build": "npm run build --prefix server && npm run build --prefix tui-web"
+    "build": "npm run build --prefix packages/shared && npm run build --prefix server && npm run build --prefix tui-web",
+    "typecheck": "npm run typecheck --prefix packages/shared && npm run typecheck --prefix server && npm run typecheck --prefix tui-web",
+    "lint": "eslint server/src server/test tui-web/src",
+    "test": "npm test --prefix server",
+    "ci": "npm run typecheck && npm run lint && npm test && npm run build"
   },
   "devDependencies": {
-    "concurrently": "^9.1.0"
+    "@eslint/js": "^10.0.1",
+    "concurrently": "^9.1.0",
+    "eslint": "^10.3.0",
+    "globals": "^17.6.0",
+    "typescript-eslint": "^8.59.2"
   }
 }

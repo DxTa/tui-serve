@@ -7,12 +7,13 @@ import { fileURLToPath } from 'url';
 import { execSync } from 'child_process';
 import { config } from './config.js';
 import { authMiddleware } from './auth.js';
+import { assertSafeBindAuthConfig } from './securityConfig.js';
 import * as sessionManager from './sessions.js';
 import { setupWebSocket, broadcastSessionUpdateExternal, broadcastSessionObjectExternal } from './ws.js';
 import { getCommandLabels } from './allowlist.js';
 import { startHealthCheck, stopHealthCheck, reconcileOnStartup } from './sessions.js';
 import { logEvent, setLogEnabled } from './eventLog.js';
-import { z } from 'zod';
+import { createSessionRequestSchema, killSessionRequestSchema, updateSessionRequestSchema } from '@remote-agent-tui/shared';
 import type { Session } from './SessionStore.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -32,6 +33,12 @@ export const logger = {
 
 // ── Create Fastify server ──
 const server = Fastify({ logger: false });
+
+server.addHook('onRequest', async (_req, reply) => {
+  reply.header('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' ws: wss:; frame-ancestors 'none'; base-uri 'self'; form-action 'self'");
+  reply.header('X-Content-Type-Options', 'nosniff');
+  reply.header('Referrer-Policy', 'no-referrer');
+});
 
 // Register auth hook
 server.addHook('onRequest', authMiddleware);
@@ -67,16 +74,8 @@ server.get('/api/sessions/:sessionId', async (req, reply) => {
 });
 
 // Create session
-const createSessionSchema = z.object({
-  id: z.string().regex(/^[a-z0-9][a-z0-9-]{0,63}$/).optional(),
-  title: z.string().max(100).optional(),
-  commandId: z.string().min(1),
-  cwd: z.string().min(1),
-  resumeFrom: z.string().optional(), // agentSessionId to resume from
-});
-
 server.post('/api/sessions', async (req, reply) => {
-  const parsed = createSessionSchema.safeParse(req.body);
+  const parsed = createSessionRequestSchema.safeParse(req.body);
   if (!parsed.success) {
     reply.code(400).send({ error: 'INVALID_INPUT', message: parsed.error.message });
     return;
@@ -96,7 +95,11 @@ server.post('/api/sessions', async (req, reply) => {
 // Update session (title, restartPolicy)
 server.patch('/api/sessions/:sessionId', async (req, reply) => {
   const { sessionId } = req.params as { sessionId: string };
-  const body = req.body as { title?: string; restartPolicy?: string };
+  const parsed = updateSessionRequestSchema.safeParse(req.body);
+  if (!parsed.success) {
+    reply.code(400).send({ error: 'INVALID_INPUT', message: parsed.error.message });
+    return;
+  }
 
   const existing = sessionManager.getSession(sessionId);
   if (!existing) {
@@ -104,10 +107,7 @@ server.patch('/api/sessions/:sessionId', async (req, reply) => {
     return;
   }
 
-  const result = sessionManager.updateSession(sessionId, {
-    title: body.title,
-    restartPolicy: body.restartPolicy as any,
-  });
+  const result = sessionManager.updateSession(sessionId, parsed.data);
 
   return result;
 });
@@ -115,9 +115,13 @@ server.patch('/api/sessions/:sessionId', async (req, reply) => {
 // Kill session
 server.post('/api/sessions/:sessionId/kill', async (req, reply) => {
   const { sessionId } = req.params as { sessionId: string };
-  const body = req.body as { confirm?: boolean };
+  const parsed = killSessionRequestSchema.safeParse(req.body ?? {});
+  if (!parsed.success) {
+    reply.code(400).send({ error: 'INVALID_INPUT', message: parsed.error.message });
+    return;
+  }
 
-  const result = sessionManager.killSession(sessionId, body.confirm ?? false);
+  const result = sessionManager.killSession(sessionId, parsed.data.confirm ?? false);
   if ('error' in result) {
     const status = result.error === 'KILL_CONFIRM_REQUIRED' ? 400 : 404;
     reply.code(status).send(result);
@@ -211,7 +215,14 @@ if (existsSync(webDistPath)) {
 
 // ── Startup ──
 async function start() {
-  logger.info('Starting Remote Agent TUI Manager', { port: config.port, env: process.env.NODE_ENV });
+  logger.info('Starting Remote Agent TUI Manager', { port: config.port, bindHost: config.bindHost, authRequired: config.authRequired, env: process.env.NODE_ENV });
+
+  assertSafeBindAuthConfig({
+    bindHost: config.bindHost,
+    authToken: config.authToken,
+    nodeEnv: process.env.NODE_ENV,
+    insecureAllowNetworkNoAuthForTests: process.env.REMOTE_AGENT_TUI_INSECURE_ALLOW_NETWORK_NO_AUTH_FOR_TESTS === '1',
+  });
 
   // Initialize event log
   setLogEnabled(true);
@@ -228,8 +239,8 @@ async function start() {
 
   // Start listening
   try {
-    await server.listen({ port: config.port, host: '0.0.0.0' });
-    logger.info('Server listening', { port: config.port });
+    await server.listen({ port: config.port, host: config.bindHost });
+    logger.info('Server listening', { port: config.port, bindHost: config.bindHost, authRequired: config.authRequired });
   } catch (err) {
     logger.error('Failed to start server', { error: String(err) });
     process.exit(1);

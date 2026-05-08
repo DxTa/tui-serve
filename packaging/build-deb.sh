@@ -28,7 +28,7 @@
 #
 # Cross-compilation for ARM:
 #   Set ARCH=arm64 and the script downloads the arm64 Node.js binary.
-#   Native modules (node-pty, better-sqlite3) must be compiled for the target.
+#   Native modules (node-pty) must be compiled for the target.
 #   Recommended: build on the target device or in a VM/container.
 
 set -euo pipefail
@@ -97,7 +97,7 @@ echo ""
 
 # ── Docker build mode ──
 # Build inside ubuntu:20.04 container for maximum glibc compatibility.
-# Native modules (better-sqlite3, node-pty) compiled against glibc 2.31
+# Native modules (node-pty) compiled against glibc 2.31
 # will run on Ubuntu 20.04+ and Debian 11+.
 if [ "$USE_DOCKER" = true ]; then
   echo ""
@@ -112,8 +112,8 @@ if [ "$USE_DOCKER" = true ]; then
   fi
 
   # Build inside container — pass all non-docker args through.
-  # The container installs g++-10 (needed for better-sqlite3's C++20 requirement)
-  # as root, then runs the actual package build as the host uid/gid so bind-mounted
+  # The container installs build tooling as root, then runs the actual package
+  # build as the host uid/gid so bind-mounted
   # node_modules, dist, packaging/build, and packaging/dist stay writable locally.
   HOST_UID="$(id -u)"
   HOST_GID="$(id -g)"

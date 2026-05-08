@@ -1,10 +1,9 @@
 // WebSocket client with full protocol support
 // Binary (0x00) for terminal I/O, JSON (0x01) for control
 
+import { PROTOCOL_VERSION, clientMessageSchema, serverMessageSchema, type ClientMessage, type ServerMessage } from '@remote-agent-tui/shared';
 import type { Session, SessionStatus, ConnectionState } from './types';
 import { getAuthToken } from './auth';
-
-const PROTOCOL_VERSION = 1;
 const FRAME_BINARY = 0x00;
 const FRAME_CONTROL = 0x01;
 
@@ -74,7 +73,7 @@ export class TerminalSocket {
       .replace(/^https/, 'wss')
       .replace(/^http/, 'ws');
 
-    const url = `${wsUrl}/ws?token=${encodeURIComponent(this.token)}`;
+    const url = `${wsUrl}/ws`;
 
     this.setConnectionState('reconnecting');
 
@@ -83,6 +82,7 @@ export class TerminalSocket {
       this.ws.binaryType = 'arraybuffer';
 
       this.ws.onopen = () => {
+        this.sendControl({ v: PROTOCOL_VERSION, type: 'auth', token: this.token });
         this.setConnectionState('connected');
         this.reconnectDelay = 1000;
         this.startHeartbeat();
@@ -158,8 +158,13 @@ export class TerminalSocket {
 
   // ── Internal ──
 
-  private sendControl(msg: Record<string, unknown>): void {
+  private sendControl(msg: ClientMessage): void {
     if (this.ws?.readyState === WebSocket.OPEN) {
+      const parsed = clientMessageSchema.safeParse(msg);
+      if (!parsed.success) {
+        console.error('Invalid client WebSocket message', parsed.error);
+        return;
+      }
       const prefix = new Uint8Array([FRAME_CONTROL]);
       const json = new TextEncoder().encode(JSON.stringify(msg));
       const combined = new Uint8Array(prefix.length + json.length);
@@ -178,7 +183,8 @@ export class TerminalSocket {
       // Fallback: plain JSON (for dev or servers that don't use binary prefix)
       try {
         const msg = JSON.parse(data);
-        this.handleControlMessage(msg);
+        const parsed = serverMessageSchema.safeParse(msg);
+        if (parsed.success) this.handleControlMessage(parsed.data);
       } catch {}
     }
   }
@@ -198,12 +204,13 @@ export class TerminalSocket {
       try {
         const json = new TextDecoder().decode(buf.subarray(1));
         const msg = JSON.parse(json);
-        this.handleControlMessage(msg);
+        const parsed = serverMessageSchema.safeParse(msg);
+        if (parsed.success) this.handleControlMessage(parsed.data);
       } catch {}
     }
   }
 
-  private handleControlMessage(msg: Record<string, any>): void {
+  private handleControlMessage(msg: ServerMessage): void {
     switch (msg.type) {
       case 'pong':
         break;

@@ -1,6 +1,8 @@
 // Type definitions for the frontend
 
-export type SessionStatus = 'starting' | 'running' | 'stopped' | 'crashed' | 'killed' | 'unknown' | 'disconnected';
+import type { SessionStatus as SharedSessionStatus } from '@remote-agent-tui/shared';
+
+export type SessionStatus = SharedSessionStatus | 'disconnected';
 export type ConnectionState = 'connected' | 'reconnecting' | 'disconnected';
 
 export interface Session {

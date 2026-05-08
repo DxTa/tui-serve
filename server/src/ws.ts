@@ -48,6 +48,7 @@ const clients = new Map<WebSocket, ClientState>();
 
 export function setupWebSocket(server: FastifyInstance): WebSocketServer {
   const wss = new WebSocketServer({ server: server.server, path: '/ws' });
+  const allowQueryToken = process.env.REMOTE_AGENT_TUI_ALLOW_WS_QUERY_TOKEN !== '0';
 
   wss.on('connection', (ws: WebSocket, req) => {
     const client: ClientState = {
@@ -59,12 +60,23 @@ export function setupWebSocket(server: FastifyInstance): WebSocketServer {
     };
     clients.set(ws, client);
 
-    // Extract auth token from query string or first message
+    // Prefer first-message auth. Query-token auth remains as staged legacy fallback.
     const url = new URL(req.url || '/', `http://${req.headers.host}`);
-    const token = url.searchParams.get('token') || undefined;
-    if (authenticateWs(token)) {
+    const hasQueryToken = allowQueryToken && url.searchParams.has('token');
+    const token = hasQueryToken ? (url.searchParams.get('token') || undefined) : undefined;
+    if (hasQueryToken && authenticateWs(token)) {
+      client.authenticated = true;
+      logger.warn('ws.query_token.deprecated');
+    } else if (!hasQueryToken && authenticateWs(undefined)) {
       client.authenticated = true;
     }
+
+    const authTimeout = setTimeout(() => {
+      if (!client.authenticated && ws.readyState === ws.OPEN) {
+        sendError(ws, ErrorCode.AUTH_REQUIRED, 'Authentication required');
+        ws.close(4001, 'Unauthorized');
+      }
+    }, 5000);
 
     if (!client.authenticated) {
       logger.info('ws.client.connected', { auth: 'pending' });
@@ -96,6 +108,7 @@ export function setupWebSocket(server: FastifyInstance): WebSocketServer {
         if ((msg as any).type === 'auth' && (msg as any).token) {
           if (authenticateWs((msg as any).token as string)) {
             client.authenticated = true;
+            clearTimeout(authTimeout);
             logger.info('ws.client.authenticated');
             return;
           }
@@ -115,6 +128,7 @@ export function setupWebSocket(server: FastifyInstance): WebSocketServer {
     });
 
     ws.on('close', () => {
+      clearTimeout(authTimeout);
       logger.info('ws.client.disconnected', { sessionId: client.sessionId });
       cleanupClient(client);
       clients.delete(ws);

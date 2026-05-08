@@ -31,6 +31,16 @@ append_root() {
   ALLOWED_ROOTS="$ALLOWED_ROOTS $root"
 }
 
+generate_token() {
+  if command -v openssl >/dev/null 2>&1; then
+    openssl rand -base64 32 | tr '+/' '-_' | tr -d '='
+  elif [ -x /usr/lib/remote-agent-tui/node/bin/node ]; then
+    /usr/lib/remote-agent-tui/node/bin/node -e "console.log(require('crypto').randomBytes(32).toString('base64url'))"
+  else
+    date +%s%N | sha256sum | awk '{print $1}'
+  fi
+}
+
 get_installer_home() {
   if [ -n "${SUDO_USER:-}" ] && [ "${SUDO_USER:-}" != "root" ]; then
     getent passwd "$SUDO_USER" 2>/dev/null | cut -d: -f6 || true
@@ -45,8 +55,6 @@ write_generated_config() {
     append_root "$installer_home"
   fi
 
-  append_root "/home/pi"
-  append_root "/tmp"
   append_root "/var/lib/remote-agent-tui"
 
   roots_json=""
@@ -193,18 +201,19 @@ case "$1" in
     chmod 640 /etc/remote-agent-tui/default-config.json
     chown remote-agent-tui:remote-agent-tui /etc/remote-agent-tui/default-config.json
 
-    # ── Create env file with defaults if it doesn't exist ──
-    # AUTH_TOKEN is empty by default = no auth required (for trusted/private networks)
-    # Set AUTH_TOKEN=your-token-here to enable authentication
+    # ── Create env file with secure network defaults if it doesn't exist ──
+    # Default bind is 0.0.0.0, so a strong generated AUTH_TOKEN is required.
     if [ ! -f /etc/remote-agent-tui/env ]; then
-      cat > /etc/remote-agent-tui/env << 'ENVEOF'
+      generated_token="$(generate_token)"
+      cat > /etc/remote-agent-tui/env << ENVEOF
 # Remote Agent TUI environment configuration
 # Edit this file to change settings, then restart:
 #   sudo systemctl restart remote-agent-tui
 
-# Auth token: leave empty for no auth (trusted networks only)
-# Set a token to require authentication: AUTH_TOKEN=your-long-random-token-here
-AUTH_TOKEN=
+# Default network bind requires authentication. For local-only no-auth mode,
+# set BIND_HOST=127.0.0.1 and AUTH_TOKEN=, then restart.
+AUTH_TOKEN=$generated_token
+BIND_HOST=0.0.0.0
 PORT=5555
 NODE_ENV=production
 
@@ -215,6 +224,19 @@ REMOTE_AGENT_TUI_WEB_DIR=/usr/share/remote-agent-tui/web
 ENVEOF
       chmod 600 /etc/remote-agent-tui/env
       chown remote-agent-tui:remote-agent-tui /etc/remote-agent-tui/env
+    else
+      if ! grep -q '^BIND_HOST=' /etc/remote-agent-tui/env; then
+        echo 'BIND_HOST=0.0.0.0' >> /etc/remote-agent-tui/env
+      fi
+      if grep -q '^AUTH_TOKEN=$' /etc/remote-agent-tui/env; then
+        generated_token="$(generate_token)"
+        tmp_env="$(mktemp)"
+        sed "s/^AUTH_TOKEN=$/AUTH_TOKEN=$generated_token/" /etc/remote-agent-tui/env > "$tmp_env"
+        cat "$tmp_env" > /etc/remote-agent-tui/env
+        rm -f "$tmp_env"
+        chmod 600 /etc/remote-agent-tui/env
+        chown remote-agent-tui:remote-agent-tui /etc/remote-agent-tui/env
+      fi
     fi
 
     # ── Install banner (always shown on fresh install) ──
@@ -224,7 +246,7 @@ ENVEOF
       echo " Remote Agent TUI - Installed"
       echo "============================================"
       echo ""
-      echo " No auth token required by default."
+      echo " Network binding uses a generated auth token by default."
       echo " System service is installed but not started by default."
       echo ""
       echo " Recommended for desktop/dev machines: install your own user service:"
@@ -235,12 +257,13 @@ ENVEOF
       echo " For appliance/headless mode, enable the system service manually:"
       echo "   sudo systemctl enable --now remote-agent-tui.service"
       echo ""
-      echo " To enable authentication, edit:"
+      echo " Auth/config:"
       echo "   sudo nano /etc/remote-agent-tui/env"
-      echo "   # Set: AUTH_TOKEN=your-long-random-token"
+      echo "   # Network mode: BIND_HOST=0.0.0.0 requires AUTH_TOKEN"
+      echo "   # Local-only mode: BIND_HOST=127.0.0.1 may use AUTH_TOKEN="
       echo "   sudo systemctl restart remote-agent-tui"
       echo ""
-      echo " Workspace roots include: /home/pi, /tmp, /var/lib/remote-agent-tui"
+      echo " Workspace roots include: /var/lib/remote-agent-tui"
       if [ -n "${SUDO_USER:-}" ] && [ "${SUDO_USER:-}" != "root" ]; then
         echo " Installing user's home is included when detected."
       fi

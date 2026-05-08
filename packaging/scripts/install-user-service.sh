@@ -20,6 +20,86 @@ SYSTEMD_USER_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
 SERVICE_NAME="remote-agent-tui.service"
 PORT="${PORT:-5555}"
 NODE_VERSION="${NODE_VERSION:-22.15.0}"
+BIND_HOST="${BIND_HOST:-${REMOTE_AGENT_TUI_BIND_HOST:-0.0.0.0}}"
+GENERATED_AUTH_TOKEN=""
+
+is_interactive() {
+  [ -t 0 ] && [ -t 1 ] && [ "${REMOTE_AGENT_TUI_NONINTERACTIVE:-}" != "1" ]
+}
+
+generate_token() {
+  if command -v openssl >/dev/null 2>&1; then
+    openssl rand -base64 32 | tr '+/' '-_' | tr -d '='
+  else
+    "$PREFIX/node/bin/node" -e "console.log(require('crypto').randomBytes(32).toString('base64url'))"
+  fi
+}
+
+json_escape() {
+  printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
+}
+
+roots_json_from_csv() {
+  csv="$1"
+  old_ifs="$IFS"
+  IFS=','
+  out=""
+  for raw in $csv; do
+    root="$(printf '%s' "$raw" | sed 's/^ *//; s/ *$//')"
+    [ -n "$root" ] || continue
+    escaped="$(json_escape "$root")"
+    if [ -z "$out" ]; then
+      out="\"$escaped\""
+    else
+      out="$out, \"$escaped\""
+    fi
+  done
+  IFS="$old_ifs"
+  printf '%s' "$out"
+}
+
+default_allowed_roots() {
+  roots=""
+  [ -d "$HOME/projects" ] && roots="$HOME/projects"
+  [ -d "$HOME/code" ] && roots="${roots:+$roots,}$HOME/code"
+  [ -d "$HOME/dev" ] && roots="${roots:+$roots,}$HOME/dev"
+  [ -n "$roots" ] || roots="$HOME"
+  printf '%s' "$roots"
+}
+
+onboard_config() {
+  default_roots="${REMOTE_AGENT_TUI_ALLOWED_ROOTS:-$(default_allowed_roots)}"
+  ALLOWED_ROOTS="$default_roots"
+
+  if is_interactive; then
+    echo ""
+    echo "Remote Agent TUI network setup"
+    echo "1) Network/LAN/Tailscale (0.0.0.0, auth required)"
+    echo "2) Local only (127.0.0.1, auth optional)"
+    printf "Choose bind mode [1]: "
+    read -r bind_choice || bind_choice=""
+    if [ "$bind_choice" = "2" ]; then
+      BIND_HOST="127.0.0.1"
+    else
+      BIND_HOST="0.0.0.0"
+    fi
+
+    if [ -z "${AUTH_TOKEN:-}" ] && [ "$BIND_HOST" = "0.0.0.0" ]; then
+      AUTH_TOKEN="$(generate_token)"
+      GENERATED_AUTH_TOKEN="$AUTH_TOKEN"
+      echo "Generated AUTH_TOKEN for network access."
+    fi
+
+    printf "Allowed workspace roots (comma-separated) [$default_roots]: "
+    read -r roots_input || roots_input=""
+    [ -n "$roots_input" ] && ALLOWED_ROOTS="$roots_input"
+  else
+    if [ -z "${AUTH_TOKEN:-}" ] && [ "$BIND_HOST" != "127.0.0.1" ] && [ "$BIND_HOST" != "localhost" ] && [ "$BIND_HOST" != "::1" ]; then
+      AUTH_TOKEN="$(generate_token)"
+      GENERATED_AUTH_TOKEN="$AUTH_TOKEN"
+    fi
+  fi
+}
 
 case "$(uname -m)" in
   x86_64) NODE_ARCH="x64" ;;
@@ -97,14 +177,18 @@ else
   exit 1
 fi
 
+onboard_config
+ROOTS_JSON="$(roots_json_from_csv "$ALLOWED_ROOTS")"
+[ -n "$ROOTS_JSON" ] || ROOTS_JSON="\"$HOME\""
+
 if [ ! -f "$CONFIG_DIR/default-config.json" ]; then
   cat > "$CONFIG_DIR/default-config.json" << EOF
 {
   "commands": [
-    { "id": "pi", "label": "Pi Coding Agent", "command": "pi", "allowedCwdRoots": ["$HOME", "/tmp"] },
-    { "id": "claude", "label": "Claude Coding Agent", "command": "claude", "allowedCwdRoots": ["$HOME", "/tmp"] },
-    { "id": "opencode", "label": "OpenCode", "command": "opencode", "allowedCwdRoots": ["$HOME", "/tmp"] },
-    { "id": "codex", "label": "Codex Coding Agent", "command": "codex", "allowedCwdRoots": ["$HOME", "/tmp"] }
+    { "id": "pi", "label": "Pi Coding Agent", "command": "pi", "allowedCwdRoots": [$ROOTS_JSON] },
+    { "id": "claude", "label": "Claude Coding Agent", "command": "claude", "allowedCwdRoots": [$ROOTS_JSON] },
+    { "id": "opencode", "label": "OpenCode", "command": "opencode", "allowedCwdRoots": [$ROOTS_JSON] },
+    { "id": "codex", "label": "Codex Coding Agent", "command": "codex", "allowedCwdRoots": [$ROOTS_JSON] }
   ],
   "hosts": [
     { "id": "local", "name": "This Machine", "address": "localhost", "port": $PORT }
@@ -116,7 +200,8 @@ fi
 if [ ! -f "$CONFIG_DIR/env" ]; then
   cat > "$CONFIG_DIR/env" << EOF
 # Remote Agent TUI per-user environment
-AUTH_TOKEN=
+AUTH_TOKEN=${AUTH_TOKEN:-}
+BIND_HOST=$BIND_HOST
 PORT=$PORT
 NODE_ENV=production
 REMOTE_AGENT_TUI_CONFIG=$CONFIG_DIR/default-config.json
@@ -127,6 +212,8 @@ REMOTE_AGENT_TUI_WEB_DIR=$PREFIX/web
 PATH=$HOME/.local/bin:$HOME/.npm-global/bin:$HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin
 EOF
   chmod 600 "$CONFIG_DIR/env"
+elif ! grep -q '^BIND_HOST=' "$CONFIG_DIR/env"; then
+  printf '\nBIND_HOST=%s\n' "$BIND_HOST" >> "$CONFIG_DIR/env"
 fi
 
 if [ -f "$PACKAGED_USER_SERVICE" ]; then
@@ -143,6 +230,11 @@ systemctl --user enable --now "$SERVICE_NAME"
 echo ""
 echo "Remote Agent TUI user service installed."
 echo "URL: http://localhost:$PORT"
+if [ -n "$GENERATED_AUTH_TOKEN" ]; then
+  echo "Generated AUTH_TOKEN written to: $CONFIG_DIR/env"
+  echo "Token: $GENERATED_AUTH_TOKEN"
+fi
+echo "Bind host: $BIND_HOST"
 echo "Status: systemctl --user status $SERVICE_NAME"
 echo "Logs: journalctl --user -u $SERVICE_NAME -f"
 echo "Config: $CONFIG_DIR/default-config.json"

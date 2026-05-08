@@ -16,7 +16,7 @@
     "lint": "eslint server/src server/test tui-web/src",
     "test": "npm test --prefix server",
     "validate:web-dist": "node scripts/validate-web-dist.mjs",
-    "ci": "npm run typecheck && npm run lint && npm test && npm run build"
+    "ci": "npm run build --prefix packages/shared && npm run typecheck && npm run lint && npm test && npm run build"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

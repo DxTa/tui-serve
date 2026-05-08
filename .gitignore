@@ -48,6 +48,7 @@ temp/
 # Screenshots (local testing artifacts)
 *.png
 !tui-web/public/*.png
+!docs/assets/*.png
 
 # Packaging build artifacts
 packaging/build/

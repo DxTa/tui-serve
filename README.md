@@ -14,6 +14,11 @@ TUI Serve is a lightweight web UI for long-running coding-agent sessions on Linu
 - **Mobile-friendly PWA** for quick checks away from keyboard
 - **Private-network friendly** for localhost, LAN, VPN, and Tailscale setups
 
+## Important limitations
+For now:
+- 1 active session at the moment, multiple browser tab for example is causing issue --> trying to resolve
+- macOS to be tested
+
 ## Installation
 
 ### Supported platforms

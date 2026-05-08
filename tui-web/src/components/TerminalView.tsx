@@ -482,7 +482,11 @@ export default function TerminalView({ session, host, onBack, onSessionUpdate }:
     event.preventDefault();
   };
 
-  const isTouchDevice = () => window.matchMedia('(pointer: coarse)').matches || navigator.maxTouchPoints > 0;
+  // Use only the primary-pointer media query.  navigator.maxTouchPoints > 0
+  // is true on touchscreen laptops where the user expects desktop behaviour
+  // (auto-focus, click-to-type, no mobile keybar).  (pointer: coarse) is only
+  // true on devices whose primary input is touch (phones, tablets).
+  const isTouchDevice = () => window.matchMedia('(pointer: coarse)').matches;
 
   const isSoftKeyboardOpen = () => {
     if (!window.visualViewport) return false;
@@ -608,6 +612,15 @@ export default function TerminalView({ session, host, onBack, onSessionUpdate }:
     });
   };
 
+  // Clicking anywhere in the terminal area on desktop should focus the terminal
+  // so the user can immediately start typing. On mobile, focus is managed
+  // exclusively through the keyboard toggle button.
+  const handleTerminalAreaClick = useCallback(() => {
+    if (!isTouchDevice()) {
+      terminalRef.current?.focus();
+    }
+  }, []);
+
   const handleMobileProxyPointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
     if (event.pointerType !== 'touch') return;
     proxyPointerStartYRef.current = event.clientY;
@@ -682,7 +695,7 @@ export default function TerminalView({ session, host, onBack, onSessionUpdate }:
       </div>
 
       {/* Terminal */}
-      <div style={{ flex: 1, overflow: 'hidden', position: 'relative', minHeight: 0 }}>
+      <div style={{ flex: 1, overflow: 'hidden', position: 'relative', minHeight: 0 }} onClick={handleTerminalAreaClick}>
         <div className="terminal-container" ref={termRef} />
         {isMobileTerminal && isRunning && (
           <div

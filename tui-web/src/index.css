@@ -48,13 +48,29 @@
 
   .terminal-container .xterm-viewport {
     width: 100% !important;
-    /* Enable native touch scrolling on the viewport.
-       The xterm-screen canvas overlays this element and intercepts
-       touch events; our JS touch handler routes vertical swipes here,
-       but we still want browser-native momentum scrolling to work
-       once the viewport is scrolled programmatically. */
+  }
+
+  .mobile-scroll-proxy {
+    position: absolute;
+    inset: 0;
+    z-index: 5;
+    overflow-y: scroll;
+    overflow-x: hidden;
+    background: transparent;
     touch-action: pan-y;
+    overscroll-behavior: contain;
     -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+  }
+
+  .mobile-scroll-proxy::-webkit-scrollbar {
+    display: none;
+  }
+
+  .mobile-scroll-content {
+    width: 1px;
+    height: 100000px;
+    pointer-events: none;
   }
 
   /* Layout */
@@ -498,7 +514,7 @@
   /* Mobile key bar */
   .mobile-keybar {
     display: flex;
-    gap: 4px;
+    gap: 6px;
     padding: 8px 12px 14px 12px;
     background: #1e293b;
     border-top: 1px solid #334155;
@@ -506,6 +522,16 @@
     flex-shrink: 0;
     min-height: 0;
     -webkit-overflow-scrolling: touch;
+  }
+
+  .mobile-keybar-group {
+    display: flex;
+    gap: 4px;
+    flex-shrink: 0;
+  }
+
+  .mobile-keybar-enter {
+    margin-left: auto;
   }
 
   .mobile-keybar .btn {
@@ -534,17 +560,28 @@
     color: #e4e4e7;
   }
 
+  /* Scroll controls — mobile fallback for browsers that block xterm touch scroll */
+  .mobile-keybar .btn.key-scroll {
+    background: #1e3a8a;
+    border-color: #3b82f6;
+    color: #bfdbfe;
+  }
+
+  /* Keyboard toggle — mobile only */
+  .mobile-keybar .btn.key-keyboard {
+    background: #422006;
+    border-color: #b45309;
+    color: #fbbf24;
+    font-size: 16px;
+    min-width: 40px;
+    padding: 10px 12px;
+  }
+
   /* Enter keys — green accent, pushed to the right */
   .mobile-keybar .btn.key-enter {
     background: #14532d;
     border-color: #22c55e;
     color: #86efac;
-    margin-left: auto;
-  }
-
-  /* First enter button (⇧ Enter) — don't double the margin */
-  .mobile-keybar .btn.key-enter + .btn.key-enter {
-    margin-left: 4px;
   }
 
   .mobile-keybar .btn.key-enter:active {
@@ -580,6 +617,37 @@
 
   /* Responsive */
   @media (max-width: 640px) {
+    .mobile-keybar {
+      flex-wrap: wrap;
+      align-items: stretch;
+      overflow-x: hidden;
+      row-gap: 6px;
+      padding: 6px 8px calc(10px + env(safe-area-inset-bottom)) 8px;
+    }
+    .mobile-keybar-group {
+      min-width: 0;
+    }
+    .mobile-keybar-scroll {
+      order: 1;
+      flex: 1 1 100%;
+      justify-content: space-between;
+    }
+    .mobile-keybar-control { order: 2; }
+    .mobile-keybar-arrows { order: 3; }
+    .mobile-keybar-chars { order: 4; }
+    .mobile-keybar-enter {
+      order: 5;
+      margin-left: auto;
+    }
+    .mobile-keybar .btn {
+      padding: 9px 10px;
+      min-width: 38px;
+      font-size: 12px;
+    }
+    .mobile-keybar-scroll .btn {
+      flex: 1 1 0;
+      min-width: 0;
+    }
     .session-grid {
       grid-template-columns: 1fr;
     }

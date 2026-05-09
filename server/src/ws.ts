@@ -22,6 +22,7 @@ import {
 } from './protocol.js';
 import { logEvent } from './eventLog.js';
 import type { Session } from './SessionStore.js';
+import crypto from 'node:crypto';
 
 // Local logger to avoid circular dependency
 const logger = {
@@ -39,15 +40,29 @@ const logger = {
 const OUTPUT_FLUSH_MS = 4;
 const OUTPUT_MAX_BUFFER_BYTES = 16 * 1024;
 
+type ParticipantCapability = 'view' | 'input' | 'resize' | 'kill' | 'restart' | 'edit_metadata';
+
 interface ClientState {
+  id: string;
+  clientId: string | null;
+  participantId: string | null;
   ws: WebSocket;
   sessionId: string | null;
   pty: IPtyProcess | null;
   lastActivity: number;
   authenticated: boolean;
+  capabilities: Set<ParticipantCapability>;
+  subscribedToDashboard: boolean;
+  subscribedSessionIds: Set<string>;
   outputBuffer: Buffer[];
   outputBufferBytes: number;
   outputFlushTimer: ReturnType<typeof setTimeout> | null;
+}
+
+const sessionConnections = new Map<string, Set<ClientState>>();
+
+function randomId(prefix: string): string {
+  return `${prefix}-${crypto.randomUUID()}`;
 }
 
 const clients = new Map<WebSocket, ClientState>();
@@ -58,11 +73,17 @@ export function setupWebSocket(server: FastifyInstance): WebSocketServer {
 
   wss.on('connection', (ws: WebSocket, req) => {
     const client: ClientState = {
+      id: randomId('conn'),
+      clientId: null,
+      participantId: null,
       ws,
       sessionId: null,
       pty: null,
       lastActivity: Date.now(),
       authenticated: false,
+      capabilities: new Set(),
+      subscribedToDashboard: true,
+      subscribedSessionIds: new Set(),
       outputBuffer: [],
       outputBufferBytes: 0,
       outputFlushTimer: null,
@@ -88,9 +109,9 @@ export function setupWebSocket(server: FastifyInstance): WebSocketServer {
     }, 5000);
 
     if (!client.authenticated) {
-      logger.info('ws.client.connected', { auth: 'pending' });
+      logger.info('ws.client.connected', { auth: 'pending', connectionId: client.id });
     } else {
-      logger.info('ws.client.connected', { auth: 'ok' });
+      logger.info('ws.client.connected', { auth: 'ok', connectionId: client.id });
     }
 
     ws.on('message', (raw: Buffer) => {
@@ -104,24 +125,29 @@ export function setupWebSocket(server: FastifyInstance): WebSocketServer {
           sendError(ws, ErrorCode.AUTH_REQUIRED, 'Authentication required');
           return;
         }
-        if (client.pty && client.sessionId === parsed.sessionId) {
-          client.pty.write(parsed.data);
-        }
+        handleInput(client, parsed.sessionId, parsed.data.toString('utf-8'));
         return;
       }
 
       const msg = parsed.message as ClientMessage;
 
-      // First message may be auth
-      if (!client.authenticated) {
-        if ((msg as any).type === 'auth' && (msg as any).token) {
-          if (authenticateWs((msg as any).token as string)) {
-            client.authenticated = true;
-            clearTimeout(authTimeout);
-            logger.info('ws.client.authenticated');
-            return;
-          }
+      // Auth can arrive even when local no-token mode already marked the socket
+      // authenticated. Still consume identity fields for participant continuity.
+      if ((msg as any).type === 'auth') {
+        const token = (msg as any).token as string | undefined;
+        if (!client.authenticated && !authenticateWs(token)) {
+          sendError(ws, ErrorCode.AUTH_REQUIRED, 'Authentication required');
+          ws.close(4001, 'Unauthorized');
+          return;
         }
+        client.authenticated = true;
+        client.clientId = typeof (msg as any).clientId === 'string' ? (msg as any).clientId : client.clientId;
+        clearTimeout(authTimeout);
+        logger.info('ws.client.authenticated', { connectionId: client.id, clientId: client.clientId });
+        return;
+      }
+
+      if (!client.authenticated) {
         sendError(ws, ErrorCode.AUTH_REQUIRED, 'Authentication required');
         ws.close(4001, 'Unauthorized');
         return;
@@ -138,7 +164,7 @@ export function setupWebSocket(server: FastifyInstance): WebSocketServer {
 
     ws.on('close', () => {
       clearTimeout(authTimeout);
-      logger.info('ws.client.disconnected', { sessionId: client.sessionId });
+      logger.info('ws.client.disconnected', { connectionId: client.id, clientId: client.clientId, sessionId: client.sessionId, participantId: client.participantId });
       cleanupClient(client);
       clients.delete(ws);
     });
@@ -172,8 +198,24 @@ function handleControlMessage(ws: WebSocket, client: ClientState, msg: ClientMes
       sendControl(ws, { v: PROTOCOL_VERSION, type: 'pong', requestId: msg.requestId });
       break;
 
+    case 'subscribe_dashboard':
+      client.subscribedToDashboard = true;
+      break;
+
+    case 'unsubscribe_dashboard':
+      client.subscribedToDashboard = false;
+      break;
+
+    case 'subscribe_session':
+      client.subscribedSessionIds.add(msg.sessionId!);
+      break;
+
+    case 'unsubscribe_session':
+      client.subscribedSessionIds.delete(msg.sessionId!);
+      break;
+
     case 'attach':
-      handleAttach(ws, client, msg.sessionId!, msg.requestId);
+      handleAttach(ws, client, msg.sessionId!, msg.requestId, (msg as any).mode, (msg as any).requestedCapabilities);
       break;
 
     case 'input':
@@ -189,11 +231,11 @@ function handleControlMessage(ws: WebSocket, client: ClientState, msg: ClientMes
       break;
 
     case 'kill':
-      handleKill(ws, client, msg.sessionId!, (msg as any).confirm, msg.requestId);
+      void handleKill(ws, client, msg.sessionId!, (msg as any).confirm, msg.requestId);
       break;
 
     case 'restart':
-      handleRestart(ws, client, msg.sessionId!, msg.requestId);
+      void handleRestart(ws, client, msg.sessionId!, msg.requestId);
       break;
 
     default:
@@ -201,7 +243,19 @@ function handleControlMessage(ws: WebSocket, client: ClientState, msg: ClientMes
   }
 }
 
-function handleAttach(ws: WebSocket, client: ClientState, sessionId: string, requestId?: string): void {
+function handleAttach(
+  ws: WebSocket,
+  client: ClientState,
+  sessionId: string,
+  requestId?: string,
+  mode: 'controller' | 'viewer' | 'auto' = 'auto',
+  requestedCapabilities?: ParticipantCapability[],
+): void {
+  if (client.sessionId === sessionId && client.pty) {
+    sendControl(ws, { v: PROTOCOL_VERSION, type: 'attached', sessionId, requestId });
+    return;
+  }
+
   // Release any existing attachment before attaching this socket to another session.
   // Without decrementing here, session switches can leave stale viewer counts.
   releaseAttachment(client, 'reattach');
@@ -228,7 +282,19 @@ function handleAttach(ws: WebSocket, client: ClientState, sessionId: string, req
 
   client.pty = pty;
   client.sessionId = sessionId;
+  client.participantId = randomId('participant');
+  client.capabilities = resolveCapabilities(mode, requestedCapabilities);
   registerBridge(session.tmuxSessionName, pty);
+  let connections = sessionConnections.get(sessionId);
+  if (!connections) {
+    connections = new Set();
+    sessionConnections.set(sessionId, connections);
+  }
+  connections.add(client);
+  client.subscribedSessionIds.add(sessionId);
+  if (mode !== 'viewer' && connections.size === 1) {
+    client.capabilities.add('resize');
+  }
 
   // Send attached ack
   sendControl(ws, { v: PROTOCOL_VERSION, type: 'attached', sessionId, requestId });
@@ -276,25 +342,41 @@ function handleAttach(ws: WebSocket, client: ClientState, sessionId: string, req
     releaseAttachment(client, 'pty_exit', sessionId);
   });
 
-  // Update attached clients count
+  // Update attached clients count from live registry.
   const store = getStore();
-  const currentCount = store.getSession(sessionId)?.attachedClients ?? 0;
-  store.updateSession(sessionId, { attachedClients: currentCount + 1, lastAttachedAt: new Date().toISOString() });
-  logEvent(sessionId, 'attached', { clientCount: currentCount + 1 });
+  const currentCount = connections.size;
+  store.updateSession(sessionId, { attachedClients: currentCount, lastAttachedAt: new Date().toISOString() });
+  logEvent(sessionId, 'attached', { clientCount: currentCount });
 
-  // Broadcast session update
+  // Broadcast session and participant updates
   broadcastSessionUpdate(sessionId);
+  broadcastParticipantUpdate(sessionId);
 
-  logger.info('ws.client.attached', { sessionId });
+  logger.info('ws.client.attached', {
+    connectionId: client.id,
+    clientId: client.clientId,
+    participantId: client.participantId,
+    sessionId,
+    capabilities: [...client.capabilities],
+    attachedClients: connections.size,
+  });
 }
 
 function handleInput(client: ClientState, sessionId: string, data: string): void {
+  if (!client.capabilities.has('input')) {
+    logger.warn('ws.input.rejected', { connectionId: client.id, participantId: client.participantId, sessionId, reason: 'missing_input_capability' });
+    return;
+  }
   if (client.pty && client.sessionId === sessionId) {
     client.pty.write(data);
   }
 }
 
 function handleResize(client: ClientState, sessionId: string, cols: number, rows: number): void {
+  if (!client.capabilities.has('resize')) {
+    logger.warn('ws.resize.rejected', { connectionId: client.id, participantId: client.participantId, sessionId, reason: 'missing_resize_capability' });
+    return;
+  }
   if (client.pty && client.sessionId === sessionId) {
     client.pty.resize(cols, rows);
   }
@@ -311,8 +393,14 @@ function handleDetach(ws: WebSocket, client: ClientState, sessionId: string, req
   logger.info('ws.client.detached', { sessionId });
 }
 
-function handleKill(ws: WebSocket, client: ClientState, sessionId: string, confirm: boolean, requestId?: string): void {
-  const result = sessionManager.killSession(sessionId, confirm);
+async function handleKill(ws: WebSocket, client: ClientState, sessionId: string, confirm: boolean, requestId?: string): Promise<void> {
+  if (client.sessionId !== sessionId || !client.capabilities.has('kill')) {
+    sendError(ws, ErrorCode.INTERNAL, 'Kill capability required', requestId);
+    logger.warn('ws.kill.rejected', { connectionId: client.id, participantId: client.participantId, sessionId, reason: 'missing_kill_capability' });
+    return;
+  }
+
+  const result = await sessionManager.killSession(sessionId, confirm);
   if ('error' in result) {
     sendError(ws, result.error, result.message, requestId);
     return;
@@ -329,8 +417,14 @@ function handleKill(ws: WebSocket, client: ClientState, sessionId: string, confi
   logger.info('ws.session.killed', { sessionId });
 }
 
-function handleRestart(ws: WebSocket, client: ClientState, sessionId: string, requestId?: string): void {
-  const result = sessionManager.restartSession(sessionId);
+async function handleRestart(ws: WebSocket, client: ClientState, sessionId: string, requestId?: string): Promise<void> {
+  if (client.sessionId !== sessionId || !client.capabilities.has('restart')) {
+    sendError(ws, ErrorCode.INTERNAL, 'Restart capability required', requestId);
+    logger.warn('ws.restart.rejected', { connectionId: client.id, participantId: client.participantId, sessionId, reason: 'missing_restart_capability' });
+    return;
+  }
+
+  const result = await sessionManager.restartSession(sessionId);
   if ('error' in result) {
     sendError(ws, result.error, result.message, requestId);
     return;
@@ -348,6 +442,16 @@ function handleRestart(ws: WebSocket, client: ClientState, sessionId: string, re
 
   broadcastSessionUpdate(sessionId);
   logger.info('ws.session.restarted', { sessionId });
+}
+
+function resolveCapabilities(mode: 'controller' | 'viewer' | 'auto', requestedCapabilities?: ParticipantCapability[]): Set<ParticipantCapability> {
+  if (mode === 'viewer') return new Set(['view']);
+
+  const capabilities = new Set<ParticipantCapability>(['view', 'input']);
+  for (const capability of requestedCapabilities || []) {
+    if (capability === 'view' || capability === 'input') capabilities.add(capability);
+  }
+  return capabilities;
 }
 
 function cleanupPty(client: ClientState): void {
@@ -371,14 +475,22 @@ function releaseAttachment(client: ClientState, reason: string, expectedSessionI
 
   cleanupPty(client);
   client.sessionId = null;
+  client.participantId = null;
+  client.capabilities = new Set();
+
+  const connections = sessionConnections.get(sessionId);
+  connections?.delete(client);
+  client.subscribedSessionIds.delete(sessionId);
+  const newCount = connections?.size ?? 0;
+  if (connections && connections.size === 0) sessionConnections.delete(sessionId);
 
   const session = sessionManager.getSession(sessionId);
   if (!session) return;
 
-  const newCount = Math.max(0, session.attachedClients - 1);
   const store = getStore();
   store.updateSession(sessionId, { attachedClients: newCount });
   broadcastSessionUpdate(sessionId);
+  broadcastParticipantUpdate(sessionId);
   logEvent(sessionId, 'detached', { clientCount: newCount, reason });
 }
 
@@ -420,6 +532,38 @@ function broadcastSessionUpdate(sessionId: string): void {
   if (!session) return;
 
   broadcastSessionObject(session);
+  broadcastDashboardUpdate([sessionId]);
+}
+
+function broadcastParticipantUpdate(sessionId: string): void {
+  const participants = [...(sessionConnections.get(sessionId) || [])].map((client) => ({
+    id: client.participantId || client.id,
+    clientId: client.clientId,
+    capabilities: [...client.capabilities],
+  }));
+  const msg: ServerMessage = { v: PROTOCOL_VERSION, type: 'participant_update', sessionId, participants } as any;
+  broadcastToSessionSubscribers(sessionId, msg);
+}
+
+function broadcastDashboardUpdate(changedSessionIds?: string[]): void {
+  const msg: ServerMessage = { v: PROTOCOL_VERSION, type: 'dashboard_update', changedSessionIds } as any;
+  for (const [ws, client] of clients) {
+    if (client.authenticated && client.subscribedToDashboard && ws.readyState === ws.OPEN) {
+      ws.send(buildControlMessage(msg));
+    }
+  }
+}
+
+function broadcastToSessionSubscribers(sessionId: string, msg: ServerMessage): void {
+  for (const [ws, client] of clients) {
+    if (
+      client.authenticated &&
+      ws.readyState === ws.OPEN &&
+      (client.sessionId === sessionId || client.subscribedSessionIds.has(sessionId))
+    ) {
+      ws.send(buildControlMessage(msg));
+    }
+  }
 }
 
 function broadcastSessionObject(session: Session): void {
@@ -430,11 +574,7 @@ function broadcastSessionObject(session: Session): void {
     ...session,
   } as any;
 
-  for (const [ws, client] of clients) {
-    if (client.authenticated && ws.readyState === ws.OPEN) {
-      ws.send(buildControlMessage(msg));
-    }
-  }
+  broadcastToSessionSubscribers(session.id, msg);
 }
 
 // Export for broadcast from REST API

@@ -121,8 +121,16 @@ export default function App() {
   // the function on every render. Prevents TerminalView re-renders
   // caused by a new onSessionUpdate reference on each App render.
   const handleSessionUpdate = useCallback((updated: Session) => {
-    setSelectedSession(updated);
-  }, []);
+    const updatedId = updated.id || (updated as any).sessionId;
+    if (currentSessionId && updatedId && updatedId !== currentSessionId) {
+      console.debug('Ignoring foreign session_update in terminal route', { currentSessionId, updatedId });
+      return;
+    }
+    setSelectedSession((prev) => {
+      if (prev && updatedId && prev.id !== updatedId) return prev;
+      return updated;
+    });
+  }, [currentSessionId]);
 
   // Loading probe
   if (checkingAuth) {

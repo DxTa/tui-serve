@@ -28,6 +28,7 @@ export default function TerminalView({ session, host, onBack, onSessionUpdate }:
   const [showKillConfirm, setShowKillConfirm] = useState(false);
   const [restarting, setRestarting] = useState(false);
   const [resuming, setResuming] = useState(false);
+  const [participantCounts, setParticipantCounts] = useState({ interactive: 0, viewers: 0 });
   const fitTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const currentSessionIdRef = useRef(session.id);
   const attachedSessionIdRef = useRef(session.id);
@@ -46,8 +47,10 @@ export default function TerminalView({ session, host, onBack, onSessionUpdate }:
     ? window.location.origin
     : `${window.location.protocol}//${host.address}:${host.port}`;
 
-  // Update session from parent
+  // Update session from parent. Parent route changes are authoritative;
+  // foreign WebSocket updates are filtered separately below.
   useEffect(() => {
+    currentSessionIdRef.current = session.id;
     setCurrentSession(session);
   }, [session]);
 
@@ -238,6 +241,11 @@ export default function TerminalView({ session, host, onBack, onSessionUpdate }:
       setConnectionState(state);
     };
 
+    socket.onAttached = (sessionId) => {
+      if (sessionId !== currentSessionIdRef.current) return;
+      scheduleFitAndResize(0);
+    };
+
     // Buffer terminal writes and flush once per animation frame.
     // Without this, every small WebSocket message triggers a separate
     // term.write() → parser → renderer cycle.  Batching collapses many
@@ -300,8 +308,18 @@ export default function TerminalView({ session, host, onBack, onSessionUpdate }:
     };
 
     socket.onSessionUpdate = (updated) => {
+      const updatedId = updated.id || (updated as any).sessionId;
+      if (updatedId !== currentSessionIdRef.current) {
+        console.debug('Ignoring foreign session_update in terminal view', {
+          currentSessionId: currentSessionIdRef.current,
+          updatedId,
+        });
+        return;
+      }
+
       setCurrentSession((prev) => {
-        const merged = { ...prev, ...updated };
+        if (prev.id !== updatedId) return prev;
+        const merged = { ...prev, ...updated, id: updatedId };
         onSessionUpdate(merged);
         return merged;
       });
@@ -309,6 +327,12 @@ export default function TerminalView({ session, host, onBack, onSessionUpdate }:
 
     socket.onKilled = () => {
       setCurrentSession((prev) => ({ ...prev, status: 'killed' as SessionStatus }));
+    };
+
+    socket.onParticipantUpdate = (sessionId, participants) => {
+      if (sessionId !== currentSessionIdRef.current) return;
+      const interactive = participants.filter((p) => p.capabilities.includes('input')).length;
+      setParticipantCounts({ interactive, viewers: Math.max(0, participants.length - interactive) });
     };
 
     // Connect and attach (attach is queued until connection opens)
@@ -525,7 +549,8 @@ export default function TerminalView({ session, host, onBack, onSessionUpdate }:
           lastServerSync: new Date().toISOString(),
         });
       }
-      socketRef.current?.kill(currentSession.id);
+      // REST kill path handles destructive confirmation. Socket kill is reserved
+      // for capability-gated protocol clients and would be rejected by default.
     } catch (err) {
       console.error('Kill failed:', err);
       // Even if the server kill fails, still mark locally and navigate back
@@ -643,6 +668,7 @@ export default function TerminalView({ session, host, onBack, onSessionUpdate }:
     connectionState === 'reconnecting' ? 'Reconnecting...' : 'Disconnected';
 
   const isRunning = currentSession.status === 'running' || currentSession.status === 'starting';
+  const participantLabel = `${participantCounts.interactive} interactive · ${participantCounts.viewers} viewer${participantCounts.viewers === 1 ? '' : 's'}`;
   const isStopped = currentSession.status === 'stopped';
   const isCrashed = currentSession.status === 'crashed';
   // If crashed but tmux session still exists, we can still attach and show the terminal
@@ -657,7 +683,7 @@ export default function TerminalView({ session, host, onBack, onSessionUpdate }:
           <button className="btn btn-ghost btn-sm" onClick={onBack}>← Back</button>
           <div>
             <div className="header-title" style={{ fontSize: 14 }}>{currentSession.title}</div>
-            <div className="header-subtitle">{currentSession.commandId} · {currentSession.cwd}</div>
+            <div className="header-subtitle">{currentSession.commandId} · {currentSession.cwd} · {participantLabel}</div>
           </div>
         </div>
         <div className="terminal-actions">

@@ -16,6 +16,21 @@ type ConnectionCallback = (state: ConnectionState) => void;
 type AttachedCallback = (sessionId: string) => void;
 type DetachedCallback = (sessionId: string) => void;
 type KilledCallback = (sessionId: string) => void;
+type DashboardUpdateCallback = (changedSessionIds?: string[]) => void;
+type ParticipantUpdateCallback = (sessionId: string, participants: Array<{ id: string; clientId: string | null; capabilities: string[] }>) => void;
+
+function getTabClientId(): string {
+  const key = 'tui-serve-client-id';
+  try {
+    const existing = sessionStorage.getItem(key);
+    if (existing) return existing;
+    const generated = crypto.randomUUID();
+    sessionStorage.setItem(key, generated);
+    return generated;
+  } catch {
+    return `client-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  }
+}
 
 export class TerminalSocket {
   private ws: WebSocket | null = null;
@@ -27,6 +42,10 @@ export class TerminalSocket {
   private token = '';
   private _connectionState: ConnectionState = 'disconnected';
   private pendingAttach: string | null = null; // session to attach once connected
+  private attachedSessions = new Set<string>();
+  private intentionallyClosed = false;
+  private socketGeneration = 0;
+  private clientId = getTabClientId();
   private readonly encoder = new TextEncoder();
   private inputFramePrefixSessionId = '';
   private inputFramePrefix: Uint8Array | null = null;
@@ -48,6 +67,8 @@ export class TerminalSocket {
   onAttached: AttachedCallback = () => {};
   onDetached: DetachedCallback = () => {};
   onKilled: KilledCallback = () => {};
+  onDashboardUpdate: DashboardUpdateCallback = () => {};
+  onParticipantUpdate: ParticipantUpdateCallback = () => {};
 
   get connectionState(): ConnectionState {
     return this._connectionState;
@@ -78,6 +99,16 @@ export class TerminalSocket {
 
     this.hostUrl = normalizedHostUrl;
     this.token = token || getAuthToken() || '';
+    this.intentionallyClosed = false;
+
+    if (this.ws && (this.ws.readyState === WebSocket.CONNECTING || this.ws.readyState === WebSocket.OPEN)) {
+      return;
+    }
+
+    if (this.ws) {
+      this.ws.close(1000, 'Replacing stale socket');
+      this.ws = null;
+    }
 
     const wsUrl = normalizedHostUrl
       .replace(/^https/, 'wss')
@@ -88,11 +119,14 @@ export class TerminalSocket {
     this.setConnectionState('reconnecting');
 
     try {
-      this.ws = new WebSocket(url);
-      this.ws.binaryType = 'arraybuffer';
+      const generation = ++this.socketGeneration;
+      const ws = new WebSocket(url);
+      this.ws = ws;
+      ws.binaryType = 'arraybuffer';
 
-      this.ws.onopen = () => {
-        this.sendControl({ v: PROTOCOL_VERSION, type: 'auth', token: this.token });
+      ws.onopen = () => {
+        if (generation !== this.socketGeneration || this.ws !== ws) return;
+        this.sendControl({ v: PROTOCOL_VERSION, type: 'auth', token: this.token, clientId: this.clientId });
         this.setConnectionState('connected');
         this.reconnectDelay = 1000;
         this.startHeartbeat();
@@ -104,17 +138,21 @@ export class TerminalSocket {
         }
       };
 
-      this.ws.onmessage = (event) => {
+      ws.onmessage = (event) => {
+        if (generation !== this.socketGeneration || this.ws !== ws) return;
         this.handleMessage(event);
       };
 
-      this.ws.onclose = () => {
+      ws.onclose = () => {
+        if (generation !== this.socketGeneration || this.ws !== ws) return;
+        this.ws = null;
+        this.attachedSessions.clear();
         this.setConnectionState('disconnected');
         this.stopHeartbeat();
-        this.scheduleReconnect();
+        if (!this.intentionallyClosed) this.scheduleReconnect();
       };
 
-      this.ws.onerror = () => {
+      ws.onerror = () => {
         // onclose will fire after this
       };
     } catch (err) {
@@ -124,6 +162,9 @@ export class TerminalSocket {
 
   disconnect(): void {
     this.pendingAttach = null;
+    this.attachedSessions.clear();
+    this.intentionallyClosed = true;
+    this.socketGeneration++;
     this.stopHeartbeat();
     this.clearReconnect();
     if (this.ws) {
@@ -142,8 +183,25 @@ export class TerminalSocket {
     this.doAttach(sessionId);
   }
 
+  subscribeDashboard(): void {
+    this.sendControl({ v: PROTOCOL_VERSION, type: 'subscribe_dashboard' });
+  }
+
+  unsubscribeDashboard(): void {
+    this.sendControl({ v: PROTOCOL_VERSION, type: 'unsubscribe_dashboard' });
+  }
+
+  subscribeSession(sessionId: string): void {
+    this.sendControl({ v: PROTOCOL_VERSION, type: 'subscribe_session', sessionId });
+  }
+
+  unsubscribeSession(sessionId: string): void {
+    this.sendControl({ v: PROTOCOL_VERSION, type: 'unsubscribe_session', sessionId });
+  }
+
   private doAttach(sessionId: string): void {
-    this.sendControl({ v: PROTOCOL_VERSION, type: 'attach', sessionId });
+    this.subscribeSession(sessionId);
+    this.sendControl({ v: PROTOCOL_VERSION, type: 'attach', sessionId, mode: 'auto' });
   }
 
   sendInput(sessionId: string, data: string): void {
@@ -205,10 +263,13 @@ export class TerminalSocket {
   }
 
   resize(sessionId: string, cols: number, rows: number): void {
+    if (!this.attachedSessions.has(sessionId)) return;
     this.sendControl({ v: PROTOCOL_VERSION, type: 'resize', sessionId, cols, rows });
   }
 
   detach(sessionId: string): void {
+    this.attachedSessions.delete(sessionId);
+    this.unsubscribeSession(sessionId);
     this.sendControl({ v: PROTOCOL_VERSION, type: 'detach', sessionId });
   }
 
@@ -279,6 +340,7 @@ export class TerminalSocket {
       case 'pong':
         break;
       case 'attached':
+        this.attachedSessions.add(msg.sessionId);
         this.onAttached(msg.sessionId);
         break;
       case 'snapshot':
@@ -297,7 +359,14 @@ export class TerminalSocket {
         this.onKilled(msg.sessionId);
         break;
       case 'detach_ack':
+        this.attachedSessions.delete(msg.sessionId);
         this.onDetached(msg.sessionId);
+        break;
+      case 'dashboard_update':
+        this.onDashboardUpdate(msg.changedSessionIds);
+        break;
+      case 'participant_update':
+        this.onParticipantUpdate(msg.sessionId, msg.participants);
         break;
     }
   }
@@ -317,6 +386,7 @@ export class TerminalSocket {
   }
 
   private scheduleReconnect(): void {
+    if (this.intentionallyClosed) return;
     this.clearReconnect();
     this.setConnectionState('reconnecting');
     this.reconnectTimer = setTimeout(() => {

@@ -1,6 +1,6 @@
 {
   "name": "tui-serve-server",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "type": "module",
   "scripts": {
     "dev": "PORT=3100 tsx watch src/index.ts",

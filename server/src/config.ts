@@ -30,6 +30,8 @@ export interface Config {
   healthCheckIntervalMs: number;
   heartbeatIntervalMs: number;
   staleSessionTimeoutHours: number;
+  wsBackpressureLimitBytes: number;
+  enablePollingPtyFallback: boolean;
 }
 
 import { readFileSync, existsSync } from 'fs';
@@ -110,4 +112,6 @@ export const config: Config = {
   healthCheckIntervalMs: 30000,
   heartbeatIntervalMs: 60000,
   staleSessionTimeoutHours: 24,
+  wsBackpressureLimitBytes: parseInt(process.env.TUI_SERVE_WS_BACKPRESSURE_LIMIT_BYTES || String(1024 * 1024), 10),
+  enablePollingPtyFallback: process.env.TUI_SERVE_ENABLE_POLLING_PTY_FALLBACK === '1',
 };

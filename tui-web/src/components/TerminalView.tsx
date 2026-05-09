@@ -36,6 +36,7 @@ export default function TerminalView({ session, host, onBack, onSessionUpdate }:
   const scrollContentRef = useRef<HTMLDivElement>(null);
   const proxySyncingFromTermRef = useRef(false);
   const proxySyncingFromProxyRef = useRef(false);
+  const mobileProxyScrollRafRef = useRef<number | null>(null);
   const proxyPointerStartYRef = useRef<number | null>(null);
   const [isMobileTerminal, setIsMobileTerminal] = useState(false);
   const mobileInputBridgeRef = useRef<HTMLInputElement>(null);
@@ -332,6 +333,8 @@ export default function TerminalView({ session, host, onBack, onSessionUpdate }:
       setCurrentSession((prev) => {
         if (prev.id !== updatedId) return prev;
         const merged = { ...prev, ...updated, id: updatedId };
+        const changed = Object.keys(merged).some((key) => (merged as any)[key] !== (prev as any)[key]);
+        if (!changed) return prev;
         onSessionUpdate(merged);
         return merged;
       });
@@ -344,7 +347,10 @@ export default function TerminalView({ session, host, onBack, onSessionUpdate }:
     socket.onParticipantUpdate = (sessionId, participants) => {
       if (sessionId !== currentSessionIdRef.current) return;
       const interactive = participants.filter((p) => p.capabilities.includes('input')).length;
-      setParticipantCounts({ interactive, viewers: Math.max(0, participants.length - interactive) });
+      const viewers = Math.max(0, participants.length - interactive);
+      setParticipantCounts((prev) => (
+        prev.interactive === interactive && prev.viewers === viewers ? prev : { interactive, viewers }
+      ));
     };
 
     // Connect and attach (attach is queued until connection opens)
@@ -419,6 +425,7 @@ export default function TerminalView({ session, host, onBack, onSessionUpdate }:
       releaseWakeLockCleanup();
       releaseWakeLock();
       if (fitTimeoutRef.current) clearTimeout(fitTimeoutRef.current);
+      if (mobileProxyScrollRafRef.current !== null) cancelAnimationFrame(mobileProxyScrollRafRef.current);
       socket.detach(attachedSessionIdRef.current);
       socket.disconnect();
       socketRef.current = null;
@@ -692,10 +699,14 @@ export default function TerminalView({ session, host, onBack, onSessionUpdate }:
     const proxy = scrollProxyRef.current;
     if (!term || !proxy || proxySyncingFromTermRef.current) return;
 
-    proxySyncingFromProxyRef.current = true;
-    term.scrollToLine(proxyTopToLine(proxy.scrollTop));
-    requestAnimationFrame(() => {
-      proxySyncingFromProxyRef.current = false;
+    if (mobileProxyScrollRafRef.current !== null) return;
+    mobileProxyScrollRafRef.current = requestAnimationFrame(() => {
+      mobileProxyScrollRafRef.current = null;
+      proxySyncingFromProxyRef.current = true;
+      term.scrollToLine(proxyTopToLine(proxy.scrollTop));
+      requestAnimationFrame(() => {
+        proxySyncingFromProxyRef.current = false;
+      });
     });
   };
 

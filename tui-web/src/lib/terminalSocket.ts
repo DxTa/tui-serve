@@ -48,6 +48,7 @@ export class TerminalSocket {
   private socketGeneration = 0;
   private clientId = getTabClientId();
   private readonly encoder = new TextEncoder();
+  private readonly decoder = new TextDecoder();
   private inputFramePrefixSessionId = '';
   private inputFramePrefix: Uint8Array | null = null;
   private readonly perfEnabled = (() => {
@@ -129,6 +130,7 @@ export class TerminalSocket {
         if (generation !== this.socketGeneration || this.ws !== ws) return;
         this.sendControl({ v: PROTOCOL_VERSION, type: 'auth', token: this.token, clientId: this.clientId });
         this.setConnectionState('connected');
+        this.clearReconnectTimer();
         this.reconnectDelay = 1000;
         this.startHeartbeat();
 
@@ -158,7 +160,7 @@ export class TerminalSocket {
       ws.onerror = () => {
         // onclose will fire after this
       };
-    } catch (err) {
+    } catch {
       this.scheduleReconnect();
     }
   }
@@ -280,14 +282,6 @@ export class TerminalSocket {
     this.sendControl({ v: PROTOCOL_VERSION, type: 'detach', sessionId });
   }
 
-  kill(sessionId: string): void {
-    this.sendControl({ v: PROTOCOL_VERSION, type: 'kill', sessionId, confirm: true });
-  }
-
-  restart(sessionId: string): void {
-    this.sendControl({ v: PROTOCOL_VERSION, type: 'restart', sessionId });
-  }
-
   // ── Internal ──
 
   private sendControl(msg: ClientMessage): void {
@@ -298,7 +292,7 @@ export class TerminalSocket {
         return;
       }
       const prefix = new Uint8Array([FRAME_CONTROL]);
-      const json = new TextEncoder().encode(JSON.stringify(msg));
+      const json = this.encoder.encode(JSON.stringify(msg));
       const combined = new Uint8Array(prefix.length + json.length);
       combined.set(prefix);
       combined.set(json, prefix.length);
@@ -328,13 +322,13 @@ export class TerminalSocket {
       // Binary terminal output
       const sessionIdLen = buf[1];
       if (buf.length < 2 + sessionIdLen) return;
-      const sessionId = new TextDecoder().decode(buf.subarray(2, 2 + sessionIdLen));
+      const sessionId = this.decoder.decode(buf.subarray(2, 2 + sessionIdLen));
       const outputData = buf.subarray(2 + sessionIdLen);
       this.onOutput(sessionId, outputData);
     } else if (buf[0] === FRAME_CONTROL) {
       // JSON control message with binary prefix
       try {
-        const json = new TextDecoder().decode(buf.subarray(1));
+        const json = this.decoder.decode(buf.subarray(1));
         const msg = JSON.parse(json);
         const parsed = serverMessageSchema.safeParse(msg);
         if (parsed.success) this.handleControlMessage(parsed.data);
@@ -393,20 +387,25 @@ export class TerminalSocket {
   }
 
   private scheduleReconnect(): void {
-    if (this.intentionallyClosed) return;
-    this.clearReconnect();
+    if (this.intentionallyClosed || this.reconnectTimer) return;
     this.setConnectionState('reconnecting');
+    const delay = this.reconnectDelay;
     this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
       this.connect(this.hostUrl, this.token);
       this.reconnectDelay = Math.min(this.reconnectDelay * 2, this.maxReconnectDelay);
-    }, this.reconnectDelay);
+    }, delay);
   }
 
-  private clearReconnect(): void {
+  private clearReconnectTimer(): void {
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
     }
+  }
+
+  private clearReconnect(): void {
+    this.clearReconnectTimer();
     this.reconnectDelay = 1000;
   }
 }

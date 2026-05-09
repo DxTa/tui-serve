@@ -4,6 +4,7 @@
 
 import { execSync } from 'child_process';
 import * as tmux from './tmux.js';
+import { config } from './config.js';
 
 // Local logger to avoid circular dependency
 function log(level: string, msg: string, data?: Record<string, unknown>) {
@@ -56,8 +57,13 @@ async function loadPtyModule(): Promise<void> {
     ptyModule = await import('node-pty');
     log('info', 'node-pty loaded successfully');
   } catch {
-    log('warn', 'node-pty NOT available, using polling fallback');
-    useFallback = true;
+    if (config.enablePollingPtyFallback) {
+      log('warn', 'node-pty NOT available, using polling fallback');
+      useFallback = true;
+      return;
+    }
+    log('error', 'node-pty NOT available and polling fallback disabled');
+    useFallback = false;
   }
 }
 
@@ -79,11 +85,15 @@ export function createPtyBridge(
     try {
       return createNodePtyBridge(tmuxSessionName, cols, rows);
     } catch (err) {
-      log('warn', 'node-pty spawn failed, falling back to polling', { error: String(err) });
-      return createPollingBridge(tmuxSessionName, cols, rows);
+      if (config.enablePollingPtyFallback) {
+        log('warn', 'node-pty spawn failed, falling back to polling', { error: String(err) });
+        return createPollingBridge(tmuxSessionName, cols, rows);
+      }
+      throw err;
     }
   }
-  return createPollingBridge(tmuxSessionName, cols, rows);
+  if (config.enablePollingPtyFallback) return createPollingBridge(tmuxSessionName, cols, rows);
+  throw new Error('node-pty unavailable; set TUI_SERVE_ENABLE_POLLING_PTY_FALLBACK=1 to allow polling fallback');
 }
 
 // ── node-pty bridge (primary) ──

@@ -39,6 +39,7 @@ export default defineConfig({
   ],
   server: {
     port: parseInt(process.env.VITE_DEV_PORT || '5173', 10),
+    allowedHosts: ['daniel-ubuntu.tail64ddbe.ts.net'],
     proxy: {
       '/api': `http://${apiHost}:${apiPort}`,
       '/ws': {

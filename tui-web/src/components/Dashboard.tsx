@@ -147,6 +147,18 @@ export default function Dashboard({
   // Filter out killed sessions — they should be auto-deleted by the server,
   // but this is a safety net so they never appear in the dashboard.
   const activeSessions = sessions.filter(s => s.status !== 'killed' && s.commandId !== 'shell');
+  const recentCwds = useMemo(() => {
+    const seen = new Set<string>();
+    return [...sessions]
+      .sort((a, b) => new Date(b.lastAttachedAt || b.updatedAt || b.createdAt).getTime() - new Date(a.lastAttachedAt || a.updatedAt || a.createdAt).getTime())
+      .map((session) => session.cwd)
+      .filter((cwd) => {
+        if (!cwd || seen.has(cwd)) return false;
+        seen.add(cwd);
+        return true;
+      })
+      .slice(0, 10);
+  }, [sessions]);
 
   const toggleSelect = (id: string) => {
     setSelectedIds(prev => {
@@ -516,6 +528,7 @@ export default function Dashboard({
       {showCreate && (
         <CreateSessionModal
           commands={commands}
+          recentCwds={recentCwds}
           onCreate={onCreateSession}
           onClose={() => setShowCreate(false)}
           onCreated={() => { setShowCreate(false); onRefresh(); }}
@@ -562,8 +575,9 @@ function hexToRgb(hex: string): string {
   return `${r},${g},${b}`;
 }
 
-function CreateSessionModal({ commands, onCreate, onClose, onCreated }: {
+function CreateSessionModal({ commands, recentCwds, onCreate, onClose, onCreated }: {
   commands: CommandInfo[];
+  recentCwds: string[];
   onCreate: (opts: { id?: string; title?: string; commandId: string; cwd: string }) => Promise<Session>;
   onClose: () => void;
   onCreated: () => void;
@@ -636,6 +650,7 @@ function CreateSessionModal({ commands, onCreate, onClose, onCreated }: {
           <label className="form-label">Working Directory</label>
           <input
             className="form-input"
+            list="recent-cwds"
             value={cwd}
             onChange={(e) => {
               setCwdTouched(true);
@@ -643,6 +658,13 @@ function CreateSessionModal({ commands, onCreate, onClose, onCreated }: {
             }}
             placeholder="/home/pi/projects/my-app"
           />
+          {recentCwds.length > 0 && (
+            <datalist id="recent-cwds">
+              {recentCwds.map((recentCwd) => (
+                <option key={recentCwd} value={recentCwd} />
+              ))}
+            </datalist>
+          )}
         </div>
 
         <div className="form-group">

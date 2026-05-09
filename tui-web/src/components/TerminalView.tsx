@@ -38,6 +38,18 @@ export default function TerminalView({ session, host, onBack, onSessionUpdate }:
   const proxySyncingFromProxyRef = useRef(false);
   const proxyPointerStartYRef = useRef<number | null>(null);
   const [isMobileTerminal, setIsMobileTerminal] = useState(false);
+  const mobileInputBridgeRef = useRef<HTMLInputElement>(null);
+
+  const terminalDebugEnabled = () =>
+    typeof window !== 'undefined' && window.localStorage.getItem('tui-terminal-debug') === '1';
+
+  const debugTerminalInput = (event: string, details: Record<string, unknown>) => {
+    if (!terminalDebugEnabled()) return;
+    const log = ((window as any).__tuiTerminalInputDebug ||= []);
+    log.push({ event, ts: performance.now(), ...details });
+    if (log.length > 500) log.shift();
+    console.debug('[terminal-input]', event, details);
+  };
 
   // When host is 'localhost' (the server that served this page), always use
   // window.location.origin — this works correctly regardless of access method
@@ -340,10 +352,16 @@ export default function TerminalView({ session, host, onBack, onSessionUpdate }:
     socket.attach(currentSessionIdRef.current);
     attachedSessionIdRef.current = currentSessionIdRef.current;
 
-    // Input handler
+    // Input handler. Desktop/physical keyboards use xterm's native input path.
+    // Mobile soft keyboards use a separate password input bridge below; xterm's
+    // hidden textarea is suppressed on touch devices because Android IMEs/Gboard
+    // keep composing text underlined and can duplicate/jumble commits.
     const inputData = term.onData((data) => {
+      debugTerminalInput('term.onData', { data, length: data.length });
       socket.sendInput(currentSessionIdRef.current, data);
     });
+
+    if (isTouchDevice()) suppressMobileTerminalInput(termRef.current);
 
     const scrollData = term.onScroll(() => {
       syncMobileScrollProxyToTerm();
@@ -389,6 +407,7 @@ export default function TerminalView({ session, host, onBack, onSessionUpdate }:
       disposed = true;
       inputData.dispose();
       scrollData.dispose();
+      // Mobile bridge listeners live on React props; no extra cleanup needed.
       if (writeRafId) cancelAnimationFrame(writeRafId);
       window.removeEventListener('resize', handleResize);
       if (window.visualViewport) {
@@ -474,9 +493,18 @@ export default function TerminalView({ session, host, onBack, onSessionUpdate }:
   const getTerminalTextarea = (root: ParentNode | null = document) =>
     root?.querySelector<HTMLTextAreaElement>('.xterm-helper-textarea') || null;
 
+  const configureMobileTerminalTextarea = (textarea: HTMLTextAreaElement) => {
+    textarea.setAttribute('autocomplete', 'off');
+    textarea.setAttribute('autocorrect', 'off');
+    textarea.setAttribute('autocapitalize', 'none');
+    textarea.setAttribute('spellcheck', 'false');
+    textarea.setAttribute('enterkeyhint', 'enter');
+  };
+
   const suppressMobileTerminalInput = (root: ParentNode | null = document) => {
     const textarea = getTerminalTextarea(root);
     if (!textarea) return;
+    configureMobileTerminalTextarea(textarea);
     textarea.inputMode = 'none';
     textarea.blur();
   };
@@ -484,6 +512,7 @@ export default function TerminalView({ session, host, onBack, onSessionUpdate }:
   const allowMobileTerminalInput = (root: ParentNode | null = document) => {
     const textarea = getTerminalTextarea(root);
     if (!textarea) return;
+    configureMobileTerminalTextarea(textarea);
     textarea.inputMode = 'text';
   };
 
@@ -518,19 +547,52 @@ export default function TerminalView({ session, host, onBack, onSessionUpdate }:
   };
 
   const toggleMobileKeyboard = () => {
-    const term = terminalRef.current;
-    if (!term) return;
-    const textarea = getTerminalTextarea();
-    if (!textarea) return;
+    const bridge = mobileInputBridgeRef.current;
+    if (!bridge) return;
 
-    if (document.activeElement === textarea && isSoftKeyboardOpen()) {
-      // Keyboard is visible: dismiss it
-      textarea.setAttribute('inputmode', 'none');
-      textarea.blur();
+    if (document.activeElement === bridge && isSoftKeyboardOpen()) {
+      bridge.blur();
     } else {
-      // Keyboard is hidden: show it
-      textarea.setAttribute('inputmode', 'text');
-      term.focus();
+      suppressMobileTerminalInput(termRef.current);
+      bridge.value = '';
+      bridge.focus();
+    }
+  };
+
+  const sendMobileBridgeInput = (data: string) => {
+    if (!data) return;
+    debugTerminalInput('mobileBridge.sendInput', { data, length: data.length });
+    socketRef.current?.sendInput(currentSessionIdRef.current, data);
+  };
+
+  const handleMobileBridgeInput = (event: React.FormEvent<HTMLInputElement>) => {
+    const input = event.currentTarget;
+    const data = input.value;
+    sendMobileBridgeInput(data);
+    input.value = '';
+  };
+
+  const handleMobileBridgeKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
+    debugTerminalInput('mobileBridge.keydown', {
+      key: event.key,
+      code: event.code,
+      isComposing: event.nativeEvent.isComposing,
+      ctrlKey: event.ctrlKey,
+      altKey: event.altKey,
+      metaKey: event.metaKey,
+    });
+
+    if (event.key === 'Backspace') {
+      event.preventDefault();
+      sendMobileBridgeInput('\x7f');
+      event.currentTarget.value = '';
+      return;
+    }
+
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      sendMobileBridgeInput('\r');
+      event.currentTarget.value = '';
     }
   };
 
@@ -723,6 +785,32 @@ export default function TerminalView({ session, host, onBack, onSessionUpdate }:
       {/* Terminal */}
       <div style={{ flex: 1, overflow: 'hidden', position: 'relative', minHeight: 0 }} onClick={handleTerminalAreaClick}>
         <div className="terminal-container" ref={termRef} />
+        {isMobileTerminal && isRunning && (
+          <input
+            ref={mobileInputBridgeRef}
+            aria-label="Mobile terminal input"
+            type="password"
+            inputMode="text"
+            autoComplete="off"
+            autoCorrect="off"
+            autoCapitalize="none"
+            spellCheck={false}
+            enterKeyHint="enter"
+            tabIndex={0}
+            onInput={handleMobileBridgeInput}
+            onKeyDown={handleMobileBridgeKeyDown}
+            style={{
+              position: 'absolute',
+              left: 0,
+              bottom: 0,
+              width: 1,
+              height: 1,
+              opacity: 0,
+              pointerEvents: 'none',
+              zIndex: -1,
+            }}
+          />
+        )}
         {isMobileTerminal && isRunning && (
           <div
             ref={scrollProxyRef}

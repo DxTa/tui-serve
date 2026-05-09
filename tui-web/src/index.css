@@ -354,6 +354,7 @@
   }
 
   .conn-connected .conn-dot { background: #22c55e; }
+  .conn-stalled .conn-dot { background: #f97316; animation: pulse 1s infinite; }
   .conn-reconnecting .conn-dot { background: #eab308; animation: pulse 1.5s infinite; }
   .conn-disconnected .conn-dot { background: #ef4444; }
 

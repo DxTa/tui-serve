@@ -3,7 +3,7 @@
 import type { SessionStatus as SharedSessionStatus } from '@tui-serve/shared';
 
 export type SessionStatus = SharedSessionStatus | 'disconnected';
-export type ConnectionState = 'connected' | 'reconnecting' | 'disconnected';
+export type ConnectionState = 'connected' | 'stalled' | 'reconnecting' | 'disconnected';
 
 export interface Session {
   id: string;

@@ -22,7 +22,7 @@ export default function TerminalView({ session, host, onBack, onSessionUpdate }:
   const terminalRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
   const socketRef = useRef<TerminalSocket | null>(null);
-  const [connectionState, setConnectionState] = useState<'connected' | 'reconnecting' | 'disconnected'>('disconnected');
+  const [connectionState, setConnectionState] = useState<'connected' | 'stalled' | 'reconnecting' | 'disconnected'>('disconnected');
   const [currentSession, setCurrentSession] = useState(session);
   const [fontSize, setFontSize] = useState(14);
   const [showKillConfirm, setShowKillConfirm] = useState(false);
@@ -394,7 +394,10 @@ export default function TerminalView({ session, host, onBack, onSessionUpdate }:
 
     // Visibility change: reconnect when page becomes visible again
     const visibilityCleanup = onVisibilityChange((visible) => {
-      if (visible && socket.connectionState !== 'connected') {
+      if (!visible) return;
+      if (socket.connectionState === 'connected') {
+        socket.probeConnection();
+      } else {
         // Reconnect and re-attach
         socket.connect(hostUrl);
         socket.attach(currentSessionIdRef.current);
@@ -403,7 +406,10 @@ export default function TerminalView({ session, host, onBack, onSessionUpdate }:
 
     // Online/offline events
     const connCleanup = onConnectionChange((online) => {
-      if (online && socket.connectionState !== 'connected') {
+      if (!online) return;
+      if (socket.connectionState === 'connected') {
+        socket.probeConnection();
+      } else {
         socket.connect(hostUrl);
         socket.attach(currentSessionIdRef.current);
       }
@@ -736,8 +742,10 @@ export default function TerminalView({ session, host, onBack, onSessionUpdate }:
   };
 
   const connClass = connectionState === 'connected' ? 'conn-connected' :
+    connectionState === 'stalled' ? 'conn-stalled' :
     connectionState === 'reconnecting' ? 'conn-reconnecting' : 'conn-disconnected';
   const connLabel = connectionState === 'connected' ? 'Connected' :
+    connectionState === 'stalled' ? 'Network stalled' :
     connectionState === 'reconnecting' ? 'Reconnecting...' : 'Disconnected';
 
   const isRunning = currentSession.status === 'running' || currentSession.status === 'starting';
@@ -764,6 +772,9 @@ export default function TerminalView({ session, host, onBack, onSessionUpdate }:
             <span className="conn-dot" />
             {connLabel}
           </div>
+          {connectionState !== 'connected' && (
+            <button className="btn btn-secondary btn-sm" onClick={() => socketRef.current?.forceReconnect('manual_button')}>Reconnect</button>
+          )}
 
           {isRunning && !restarting && (
             <button className="btn btn-danger btn-sm" onClick={() => setShowKillConfirm(true)}>Kill</button>

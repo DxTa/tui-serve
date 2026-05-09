@@ -373,11 +373,15 @@ function handleInput(client: ClientState, sessionId: string, data: string): void
 }
 
 function handleResize(client: ClientState, sessionId: string, cols: number, rows: number): void {
+  if (client.sessionId !== sessionId) {
+    logger.warn('ws.resize.rejected', { connectionId: client.id, participantId: client.participantId, sessionId, attachedSessionId: client.sessionId, reason: 'foreign_session' });
+    return;
+  }
   if (!client.capabilities.has('resize')) {
     logger.warn('ws.resize.rejected', { connectionId: client.id, participantId: client.participantId, sessionId, reason: 'missing_resize_capability' });
     return;
   }
-  if (client.pty && client.sessionId === sessionId) {
+  if (client.pty) {
     client.pty.resize(cols, rows);
   }
   const session = sessionManager.getSession(sessionId);
@@ -450,8 +454,21 @@ function resolveCapabilities(mode: 'controller' | 'viewer' | 'auto', requestedCa
   const capabilities = new Set<ParticipantCapability>(['view', 'input']);
   for (const capability of requestedCapabilities || []) {
     if (capability === 'view' || capability === 'input') capabilities.add(capability);
+    if (mode === 'controller' && (capability === 'kill' || capability === 'restart' || capability === 'edit_metadata')) capabilities.add(capability);
   }
   return capabilities;
+}
+
+function ensureResizeOwner(sessionId: string): void {
+  const connections = sessionConnections.get(sessionId);
+  if (!connections || connections.size === 0) return;
+  if ([...connections].some((client) => client.capabilities.has('resize'))) return;
+
+  const nextOwner = [...connections].find((client) => client.capabilities.has('input'));
+  if (nextOwner) {
+    nextOwner.capabilities.add('resize');
+    logger.info('ws.resize.promoted', { connectionId: nextOwner.id, participantId: nextOwner.participantId, sessionId });
+  }
 }
 
 function cleanupPty(client: ClientState): void {
@@ -481,6 +498,7 @@ function releaseAttachment(client: ClientState, reason: string, expectedSessionI
   const connections = sessionConnections.get(sessionId);
   connections?.delete(client);
   client.subscribedSessionIds.delete(sessionId);
+  ensureResizeOwner(sessionId);
   const newCount = connections?.size ?? 0;
   if (connections && connections.size === 0) sessionConnections.delete(sessionId);
 

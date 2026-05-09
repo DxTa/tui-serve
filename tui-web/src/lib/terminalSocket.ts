@@ -42,6 +42,7 @@ export class TerminalSocket {
   private token = '';
   private _connectionState: ConnectionState = 'disconnected';
   private pendingAttach: string | null = null; // session to attach once connected
+  private desiredSessionId: string | null = null;
   private attachedSessions = new Set<string>();
   private intentionallyClosed = false;
   private socketGeneration = 0;
@@ -131,9 +132,11 @@ export class TerminalSocket {
         this.reconnectDelay = 1000;
         this.startHeartbeat();
 
-        // Send pending attach if one was queued
-        if (this.pendingAttach) {
-          this.doAttach(this.pendingAttach);
+        // Send pending attach if one was queued, or restore the desired
+        // attachment after reconnecting a dropped socket.
+        const sessionToAttach = this.pendingAttach || this.desiredSessionId;
+        if (sessionToAttach) {
+          this.doAttach(sessionToAttach);
           this.pendingAttach = null;
         }
       };
@@ -162,6 +165,7 @@ export class TerminalSocket {
 
   disconnect(): void {
     this.pendingAttach = null;
+    this.desiredSessionId = null;
     this.attachedSessions.clear();
     this.intentionallyClosed = true;
     this.socketGeneration++;
@@ -175,6 +179,7 @@ export class TerminalSocket {
   }
 
   attach(sessionId: string): void {
+    this.desiredSessionId = sessionId;
     // If not yet connected, queue the attach for when connection opens
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
       this.pendingAttach = sessionId;
@@ -268,6 +273,8 @@ export class TerminalSocket {
   }
 
   detach(sessionId: string): void {
+    if (this.desiredSessionId === sessionId) this.desiredSessionId = null;
+    if (this.pendingAttach === sessionId) this.pendingAttach = null;
     this.attachedSessions.delete(sessionId);
     this.unsubscribeSession(sessionId);
     this.sendControl({ v: PROTOCOL_VERSION, type: 'detach', sessionId });

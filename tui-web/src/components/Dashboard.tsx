@@ -597,6 +597,15 @@ function CreateSessionModal({ commands, recentCwds, onCreate, onClose, onCreated
   const [sessionId, setSessionId] = useState('');
   const [error, setError] = useState('');
   const [creating, setCreating] = useState(false);
+  const [cwdMenuOpen, setCwdMenuOpen] = useState(false);
+  const cwdOptions = useMemo(() => (
+    Array.from(new Set(recentCwds.filter(Boolean)))
+  ), [recentCwds]);
+  const visibleCwdOptions = useMemo(() => {
+    const query = cwd.trim().toLowerCase();
+    if (!query) return cwdOptions;
+    return cwdOptions.filter((option) => option.toLowerCase().includes(query));
+  }, [cwd, cwdOptions]);
 
   useEffect(() => {
     const selected = agentCommands.find(c => c.id === commandId) || agentCommands[0];
@@ -648,23 +657,56 @@ function CreateSessionModal({ commands, recentCwds, onCreate, onClose, onCreated
 
         <div className="form-group">
           <label className="form-label">Working Directory</label>
-          <input
-            className="form-input"
-            list="recent-cwds"
-            value={cwd}
-            onChange={(e) => {
-              setCwdTouched(true);
-              setCwd(e.target.value);
-            }}
-            placeholder="/home/pi/projects/my-app"
-          />
-          {recentCwds.length > 0 && (
-            <datalist id="recent-cwds">
-              {recentCwds.map((recentCwd) => (
-                <option key={recentCwd} value={recentCwd} />
-              ))}
-            </datalist>
-          )}
+          <div className="combobox">
+            <input
+              className="form-input combobox-input"
+              value={cwd}
+              onFocus={() => setCwdMenuOpen(cwdOptions.length > 0)}
+              onChange={(e) => {
+                setCwdTouched(true);
+                setCwd(e.target.value);
+                setCwdMenuOpen(cwdOptions.length > 0);
+              }}
+              onKeyDown={(e) => {
+                if (e.key === 'Escape') setCwdMenuOpen(false);
+                if (e.key === 'ArrowDown' && cwdOptions.length > 0) setCwdMenuOpen(true);
+              }}
+              onBlur={() => window.setTimeout(() => setCwdMenuOpen(false), 100)}
+              placeholder="/home/pi/projects/my-app"
+              aria-autocomplete="list"
+              aria-expanded={cwdMenuOpen}
+            />
+            <button
+              type="button"
+              className="combobox-toggle"
+              onClick={() => setCwdMenuOpen((open) => cwdOptions.length > 0 && !open)}
+              aria-label="Show recent working directories"
+            >
+              ▾
+            </button>
+            {cwdMenuOpen && cwdOptions.length > 0 && (
+              <div className="combobox-menu" role="listbox">
+                {visibleCwdOptions.length > 0 ? visibleCwdOptions.map((recentCwd) => (
+                  <button
+                    key={recentCwd}
+                    type="button"
+                    className="combobox-option"
+                    onMouseDown={(e) => e.preventDefault()}
+                    onClick={() => {
+                      setCwdTouched(true);
+                      setCwd(recentCwd);
+                      setCwdMenuOpen(false);
+                    }}
+                    role="option"
+                  >
+                    {recentCwd}
+                  </button>
+                )) : (
+                  <div className="combobox-empty">No recent path matches. Type new path.</div>
+                )}
+              </div>
+            )}
+          </div>
         </div>
 
         <div className="form-group">

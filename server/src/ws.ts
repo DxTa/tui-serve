@@ -11,8 +11,6 @@ import * as tmux from './tmux.js';
 import { createPtyBridge, registerBridge, unregisterBridge, type IPtyProcess } from './ptyBridge.js';
 import {
   PROTOCOL_VERSION,
-  FRAME_BINARY,
-  FRAME_CONTROL,
   ErrorCode,
   buildBinaryFrame,
   buildControlMessage,
@@ -22,6 +20,7 @@ import {
 } from './protocol.js';
 import { logEvent } from './eventLog.js';
 import type { Session } from './SessionStore.js';
+import { config } from './config.js';
 import crypto from 'node:crypto';
 
 // Local logger to avoid circular dependency
@@ -69,9 +68,13 @@ const clients = new Map<WebSocket, ClientState>();
 
 export function setupWebSocket(server: FastifyInstance): WebSocketServer {
   const wss = new WebSocketServer({ server: server.server, path: '/ws' });
-  const allowQueryToken = process.env.TUI_SERVE_ALLOW_WS_QUERY_TOKEN !== '0';
 
-  wss.on('connection', (ws: WebSocket, req) => {
+  wss.on('connection', (ws: WebSocket) => {
+    if (clients.size >= config.maxWsConnections) {
+      sendError(ws, ErrorCode.RATE_LIMITED, 'Too many WebSocket connections');
+      ws.close(1013, 'Too many connections');
+      return;
+    }
     const client: ClientState = {
       id: randomId('conn'),
       clientId: null,
@@ -90,14 +93,8 @@ export function setupWebSocket(server: FastifyInstance): WebSocketServer {
     };
     clients.set(ws, client);
 
-    // Prefer first-message auth. Query-token auth remains as staged legacy fallback.
-    const url = new URL(req.url || '/', `http://${req.headers.host}`);
-    const hasQueryToken = allowQueryToken && url.searchParams.has('token');
-    const token = hasQueryToken ? (url.searchParams.get('token') || undefined) : undefined;
-    if (hasQueryToken && authenticateWs(token)) {
-      client.authenticated = true;
-      logger.warn('ws.query_token.deprecated');
-    } else if (!hasQueryToken && authenticateWs(undefined)) {
+    // Prefer first-message auth. URL query tokens are intentionally ignored.
+    if (authenticateWs(undefined)) {
       client.authenticated = true;
     }
 
@@ -106,7 +103,7 @@ export function setupWebSocket(server: FastifyInstance): WebSocketServer {
         sendError(ws, ErrorCode.AUTH_REQUIRED, 'Authentication required');
         ws.close(4001, 'Unauthorized');
       }
-    }, 5000);
+    }, Math.min(5000, config.heartbeatIntervalMs));
 
     if (!client.authenticated) {
       logger.info('ws.client.connected', { auth: 'pending', connectionId: client.id });
@@ -178,14 +175,14 @@ export function setupWebSocket(server: FastifyInstance): WebSocketServer {
   const heartbeatInterval = setInterval(() => {
     const now = Date.now();
     for (const [ws, client] of clients) {
-      if (now - client.lastActivity > 70000) {
+      if (now - client.lastActivity > config.heartbeatIntervalMs + 10000) {
         logger.info('ws.heartbeat.timeout', { sessionId: client.sessionId });
         ws.close(4002, 'Heartbeat timeout');
-      } else if (now - client.lastActivity > 60000) {
+      } else if (now - client.lastActivity > config.heartbeatIntervalMs) {
         sendControl(ws, { v: PROTOCOL_VERSION, type: 'ping' });
       }
     }
-  }, 30000);
+  }, Math.max(1000, Math.floor(config.heartbeatIntervalMs / 2)));
 
   wss.on('close', () => clearInterval(heartbeatInterval));
 
@@ -300,7 +297,7 @@ function handleAttach(
   sendControl(ws, { v: PROTOCOL_VERSION, type: 'attached', sessionId, requestId });
 
   // Send snapshot
-  const snapshot = tmux.capturePane(session.tmuxSessionName);
+  const snapshot = tmux.capturePane(session.tmuxSessionName, config.snapshotLines);
   if (snapshot) {
     sendControl(ws, { v: PROTOCOL_VERSION, type: 'snapshot', sessionId, data: snapshot });
   }
@@ -399,7 +396,7 @@ function handleDetach(ws: WebSocket, client: ClientState, sessionId: string, req
 
 async function handleKill(ws: WebSocket, client: ClientState, sessionId: string, confirm: boolean, requestId?: string): Promise<void> {
   if (client.sessionId !== sessionId || !client.capabilities.has('kill')) {
-    sendError(ws, ErrorCode.INTERNAL, 'Kill capability required', requestId);
+    sendError(ws, ErrorCode.CAPABILITY_REQUIRED, 'Kill capability required', requestId);
     logger.warn('ws.kill.rejected', { connectionId: client.id, participantId: client.participantId, sessionId, reason: 'missing_kill_capability' });
     return;
   }
@@ -423,7 +420,7 @@ async function handleKill(ws: WebSocket, client: ClientState, sessionId: string,
 
 async function handleRestart(ws: WebSocket, client: ClientState, sessionId: string, requestId?: string): Promise<void> {
   if (client.sessionId !== sessionId || !client.capabilities.has('restart')) {
-    sendError(ws, ErrorCode.INTERNAL, 'Restart capability required', requestId);
+    sendError(ws, ErrorCode.CAPABILITY_REQUIRED, 'Restart capability required', requestId);
     logger.warn('ws.restart.rejected', { connectionId: client.id, participantId: client.participantId, sessionId, reason: 'missing_restart_capability' });
     return;
   }
@@ -448,7 +445,7 @@ async function handleRestart(ws: WebSocket, client: ClientState, sessionId: stri
   logger.info('ws.session.restarted', { sessionId });
 }
 
-function resolveCapabilities(mode: 'controller' | 'viewer' | 'auto', requestedCapabilities?: ParticipantCapability[]): Set<ParticipantCapability> {
+export function resolveCapabilities(mode: 'controller' | 'viewer' | 'auto', requestedCapabilities?: ParticipantCapability[]): Set<ParticipantCapability> {
   if (mode === 'viewer') return new Set(['view']);
 
   const capabilities = new Set<ParticipantCapability>(['view', 'input']);
@@ -532,13 +529,24 @@ function flushClientOutput(client: ClientState): void {
     : Buffer.concat(client.outputBuffer, client.outputBufferBytes);
   client.outputBuffer = [];
   client.outputBufferBytes = 0;
-  client.ws.send(buildBinaryFrame(client.sessionId, payload));
+  if (!sendRaw(client.ws, buildBinaryFrame(client.sessionId, payload))) {
+    logger.warn('ws.output.backpressure_disconnect', { sessionId: client.sessionId, bufferedAmount: client.ws.bufferedAmount });
+    client.ws.close(1013, 'WebSocket backpressure');
+  }
+}
+
+function sendRaw(ws: WebSocket, payload: Buffer): boolean {
+  if (ws.readyState !== ws.OPEN) return false;
+  if (ws.bufferedAmount > config.wsBackpressureLimitBytes) {
+    logger.warn('ws.backpressure.drop', { bufferedAmount: ws.bufferedAmount, limit: config.wsBackpressureLimitBytes });
+    return false;
+  }
+  ws.send(payload);
+  return true;
 }
 
 function sendControl(ws: WebSocket, msg: ServerMessage): void {
-  if (ws.readyState === ws.OPEN) {
-    ws.send(buildControlMessage(msg));
-  }
+  sendRaw(ws, buildControlMessage(msg));
 }
 
 function sendError(ws: WebSocket, code: ErrorCode, message: string, requestId?: string): void {
@@ -567,7 +575,7 @@ function broadcastDashboardUpdate(changedSessionIds?: string[]): void {
   const msg: ServerMessage = { v: PROTOCOL_VERSION, type: 'dashboard_update', changedSessionIds } as any;
   for (const [ws, client] of clients) {
     if (client.authenticated && client.subscribedToDashboard && ws.readyState === ws.OPEN) {
-      ws.send(buildControlMessage(msg));
+      sendRaw(ws, buildControlMessage(msg));
     }
   }
 }
@@ -579,7 +587,7 @@ function broadcastToSessionSubscribers(sessionId: string, msg: ServerMessage): v
       ws.readyState === ws.OPEN &&
       (client.sessionId === sessionId || client.subscribedSessionIds.has(sessionId))
     ) {
-      ws.send(buildControlMessage(msg));
+      sendRaw(ws, buildControlMessage(msg));
     }
   }
 }

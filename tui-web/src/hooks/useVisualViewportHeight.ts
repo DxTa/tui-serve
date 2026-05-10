@@ -8,7 +8,8 @@ export function useVisualViewportHeight(onChange?: () => void) {
 
   useEffect(() => {
     const updateVisualViewportHeight = () => {
-      setVisualViewportHeight(window.visualViewport?.height ?? window.innerHeight);
+      const nextHeight = window.visualViewport?.height ?? window.innerHeight;
+      setVisualViewportHeight((prev) => (prev === nextHeight ? prev : nextHeight));
       onChange?.();
     };
 

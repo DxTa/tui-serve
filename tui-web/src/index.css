@@ -354,6 +354,7 @@
   }
 
   .conn-connected .conn-dot { background: #22c55e; }
+  .conn-stalled .conn-dot { background: #f97316; animation: pulse 1s infinite; }
   .conn-reconnecting .conn-dot { background: #eab308; animation: pulse 1.5s infinite; }
   .conn-disconnected .conn-dot { background: #ef4444; }
 
@@ -475,6 +476,72 @@
   }
 
   .form-select option { background: #1e293b; }
+
+  .combobox {
+    position: relative;
+  }
+
+  .combobox-input {
+    padding-right: 36px;
+  }
+
+  .combobox-toggle {
+    position: absolute;
+    top: 1px;
+    right: 1px;
+    width: 34px;
+    height: calc(100% - 2px);
+    border: 0;
+    border-left: 1px solid #334155;
+    border-radius: 0 5px 5px 0;
+    background: #0f172a;
+    color: #94a3b8;
+    cursor: pointer;
+  }
+
+  .combobox-toggle:hover {
+    color: #f1f5f9;
+    background: #1e293b;
+  }
+
+  .combobox-menu {
+    position: absolute;
+    z-index: 20;
+    top: calc(100% + 4px);
+    left: 0;
+    right: 0;
+    max-height: 180px;
+    overflow-y: auto;
+    background: #0f172a;
+    border: 1px solid #334155;
+    border-radius: 6px;
+    box-shadow: 0 12px 28px rgba(0, 0, 0, 0.35);
+  }
+
+  .combobox-option {
+    display: block;
+    width: 100%;
+    padding: 8px 12px;
+    border: 0;
+    background: transparent;
+    color: #f1f5f9;
+    font: inherit;
+    font-size: 13px;
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .combobox-option:hover,
+  .combobox-option:focus {
+    background: #1e293b;
+    outline: none;
+  }
+
+  .combobox-empty {
+    padding: 8px 12px;
+    color: #94a3b8;
+    font-size: 13px;
+  }
 
   .form-actions {
     display: flex;

@@ -35,9 +35,15 @@ function getTabClientId(): string {
 export class TerminalSocket {
   private ws: WebSocket | null = null;
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+  private livenessTimer: ReturnType<typeof setInterval> | null = null;
+  private connectTimer: ReturnType<typeof setTimeout> | null = null;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private reconnectDelay = 1000;
   private maxReconnectDelay = 30000;
+  private lastInboundAt = 0;
+  private readonly connectTimeoutMs = 10000;
+  private readonly staleSocketMs = 45000;
+  private readonly inputBackpressureLimitBytes = 256 * 1024;
   private hostUrl = '';
   private token = '';
   private _connectionState: ConnectionState = 'disconnected';
@@ -48,6 +54,7 @@ export class TerminalSocket {
   private socketGeneration = 0;
   private clientId = getTabClientId();
   private readonly encoder = new TextEncoder();
+  private readonly decoder = new TextDecoder();
   private inputFramePrefixSessionId = '';
   private inputFramePrefix: Uint8Array | null = null;
   private readonly perfEnabled = (() => {
@@ -127,10 +134,13 @@ export class TerminalSocket {
 
       ws.onopen = () => {
         if (generation !== this.socketGeneration || this.ws !== ws) return;
+        this.clearConnectTimer();
+        this.markInboundActivity();
         this.sendControl({ v: PROTOCOL_VERSION, type: 'auth', token: this.token, clientId: this.clientId });
         this.setConnectionState('connected');
-        this.reconnectDelay = 1000;
+        this.clearReconnectTimer();
         this.startHeartbeat();
+        this.startLivenessWatchdog();
 
         // Send pending attach if one was queued, or restore the desired
         // attachment after reconnecting a dropped socket.
@@ -143,22 +153,31 @@ export class TerminalSocket {
 
       ws.onmessage = (event) => {
         if (generation !== this.socketGeneration || this.ws !== ws) return;
+        this.markInboundActivity();
         this.handleMessage(event);
       };
 
       ws.onclose = () => {
         if (generation !== this.socketGeneration || this.ws !== ws) return;
+        this.clearConnectTimer();
         this.ws = null;
         this.attachedSessions.clear();
         this.setConnectionState('disconnected');
         this.stopHeartbeat();
+        this.stopLivenessWatchdog();
         if (!this.intentionallyClosed) this.scheduleReconnect();
       };
 
       ws.onerror = () => {
-        // onclose will fire after this
+        if (generation !== this.socketGeneration || this.ws !== ws) return;
+        this.forceReconnect('socket_error', false);
       };
-    } catch (err) {
+      this.connectTimer = setTimeout(() => {
+        if (generation !== this.socketGeneration || this.ws !== ws) return;
+        this.forceReconnect('connect_timeout', false);
+      }, this.connectTimeoutMs);
+    } catch {
+      this.clearConnectTimer();
       this.scheduleReconnect();
     }
   }
@@ -170,6 +189,8 @@ export class TerminalSocket {
     this.intentionallyClosed = true;
     this.socketGeneration++;
     this.stopHeartbeat();
+    this.stopLivenessWatchdog();
+    this.clearConnectTimer();
     this.clearReconnect();
     if (this.ws) {
       this.ws.close(1000, 'Client disconnect');
@@ -213,7 +234,10 @@ export class TerminalSocket {
     // Hot path — use binary framing to bypass per-keystroke JSON serialization,
     // Zod validation, and repeated session-id encoding. Frame format:
     // [0x00] [1-byte sessionId length] [sessionId UTF-8] [raw terminal data]
-    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN || this._connectionState === 'stalled') {
+      this.onError('NETWORK_UNAVAILABLE', 'Network unavailable; input paused until reconnect.');
+      return;
+    }
 
     if (!this.inputFramePrefix || this.inputFramePrefixSessionId !== sessionId) {
       const sessionIdBytes = this.encoder.encode(sessionId);
@@ -231,6 +255,14 @@ export class TerminalSocket {
     const frame = new Uint8Array(this.inputFramePrefix.length + dataBytes.length);
     frame.set(this.inputFramePrefix);
     frame.set(dataBytes, this.inputFramePrefix.length);
+
+    if (this.ws.bufferedAmount + frame.byteLength > this.inputBackpressureLimitBytes) {
+      this.setConnectionState('stalled');
+      this.onError('NETWORK_STALLED', 'Network stalled; input paused to avoid losing keystrokes.');
+      this.forceReconnect('input_backpressure', false);
+      return;
+    }
+
     this.ws.send(frame);
 
     if (this.perfEnabled) {
@@ -280,14 +312,6 @@ export class TerminalSocket {
     this.sendControl({ v: PROTOCOL_VERSION, type: 'detach', sessionId });
   }
 
-  kill(sessionId: string): void {
-    this.sendControl({ v: PROTOCOL_VERSION, type: 'kill', sessionId, confirm: true });
-  }
-
-  restart(sessionId: string): void {
-    this.sendControl({ v: PROTOCOL_VERSION, type: 'restart', sessionId });
-  }
-
   // ── Internal ──
 
   private sendControl(msg: ClientMessage): void {
@@ -298,7 +322,7 @@ export class TerminalSocket {
         return;
       }
       const prefix = new Uint8Array([FRAME_CONTROL]);
-      const json = new TextEncoder().encode(JSON.stringify(msg));
+      const json = this.encoder.encode(JSON.stringify(msg));
       const combined = new Uint8Array(prefix.length + json.length);
       combined.set(prefix);
       combined.set(json, prefix.length);
@@ -328,13 +352,13 @@ export class TerminalSocket {
       // Binary terminal output
       const sessionIdLen = buf[1];
       if (buf.length < 2 + sessionIdLen) return;
-      const sessionId = new TextDecoder().decode(buf.subarray(2, 2 + sessionIdLen));
+      const sessionId = this.decoder.decode(buf.subarray(2, 2 + sessionIdLen));
       const outputData = buf.subarray(2 + sessionIdLen);
       this.onOutput(sessionId, outputData);
     } else if (buf[0] === FRAME_CONTROL) {
       // JSON control message with binary prefix
       try {
-        const json = new TextDecoder().decode(buf.subarray(1));
+        const json = this.decoder.decode(buf.subarray(1));
         const msg = JSON.parse(json);
         const parsed = serverMessageSchema.safeParse(msg);
         if (parsed.success) this.handleControlMessage(parsed.data);
@@ -348,6 +372,7 @@ export class TerminalSocket {
         break;
       case 'attached':
         this.attachedSessions.add(msg.sessionId);
+        this.reconnectDelay = 1000;
         this.onAttached(msg.sessionId);
         break;
       case 'snapshot':
@@ -392,21 +417,86 @@ export class TerminalSocket {
     }
   }
 
-  private scheduleReconnect(): void {
-    if (this.intentionallyClosed) return;
-    this.clearReconnect();
-    this.setConnectionState('reconnecting');
-    this.reconnectTimer = setTimeout(() => {
-      this.connect(this.hostUrl, this.token);
-      this.reconnectDelay = Math.min(this.reconnectDelay * 2, this.maxReconnectDelay);
-    }, this.reconnectDelay);
+  private markInboundActivity(): void {
+    this.lastInboundAt = Date.now();
+    if (this._connectionState === 'stalled') this.setConnectionState('connected');
   }
 
-  private clearReconnect(): void {
+  private startLivenessWatchdog(): void {
+    this.stopLivenessWatchdog();
+    this.livenessTimer = setInterval(() => {
+      if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+      if (Date.now() - this.lastInboundAt > this.staleSocketMs) {
+        this.setConnectionState('stalled');
+        this.forceReconnect('stale_socket');
+      }
+    }, 5000);
+  }
+
+  private stopLivenessWatchdog(): void {
+    if (this.livenessTimer) {
+      clearInterval(this.livenessTimer);
+      this.livenessTimer = null;
+    }
+  }
+
+  probeConnection(): void {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      this.forceReconnect('probe_not_open');
+      return;
+    }
+    if (Date.now() - this.lastInboundAt > 10000) {
+      this.forceReconnect('probe_stale');
+      return;
+    }
+    this.sendControl({ v: PROTOCOL_VERSION, type: 'ping' });
+  }
+
+  forceReconnect(reason = 'manual', immediate = true): void {
+    if (this.intentionallyClosed) return;
+    const ws = this.ws;
+    this.socketGeneration++;
+    this.clearConnectTimer();
+    this.stopHeartbeat();
+    this.stopLivenessWatchdog();
+    this.ws = null;
+    this.attachedSessions.clear();
+    this.setConnectionState(reason === 'stale_socket' || reason === 'input_backpressure' ? 'stalled' : 'reconnecting');
+    if (ws) {
+      try { ws.close(4000, reason); } catch {}
+    }
+    if (immediate) this.clearReconnectTimer();
+    this.scheduleReconnect(immediate);
+  }
+
+  private scheduleReconnect(immediate = false): void {
+    if (this.intentionallyClosed || this.reconnectTimer) return;
+    if (this._connectionState !== 'stalled') this.setConnectionState('reconnecting');
+    const baseDelay = immediate ? 0 : this.reconnectDelay;
+    const delay = baseDelay === 0 ? 0 : Math.floor(Math.random() * baseDelay);
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      this.connect(this.hostUrl, this.token);
+      this.reconnectDelay = Math.min(this.reconnectDelay * 2, this.maxReconnectDelay);
+    }, delay);
+  }
+
+  private clearConnectTimer(): void {
+    if (this.connectTimer) {
+      clearTimeout(this.connectTimer);
+      this.connectTimer = null;
+    }
+  }
+
+  private clearReconnectTimer(): void {
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
     }
+  }
+
+  private clearReconnect(): void {
+    this.clearReconnectTimer();
     this.reconnectDelay = 1000;
   }
 }

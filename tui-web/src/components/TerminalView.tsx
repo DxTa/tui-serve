@@ -22,7 +22,7 @@ export default function TerminalView({ session, host, onBack, onSessionUpdate }:
   const terminalRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
   const socketRef = useRef<TerminalSocket | null>(null);
-  const [connectionState, setConnectionState] = useState<'connected' | 'reconnecting' | 'disconnected'>('disconnected');
+  const [connectionState, setConnectionState] = useState<'connected' | 'stalled' | 'reconnecting' | 'disconnected'>('disconnected');
   const [currentSession, setCurrentSession] = useState(session);
   const [fontSize, setFontSize] = useState(14);
   const [showKillConfirm, setShowKillConfirm] = useState(false);
@@ -36,6 +36,7 @@ export default function TerminalView({ session, host, onBack, onSessionUpdate }:
   const scrollContentRef = useRef<HTMLDivElement>(null);
   const proxySyncingFromTermRef = useRef(false);
   const proxySyncingFromProxyRef = useRef(false);
+  const mobileProxyScrollRafRef = useRef<number | null>(null);
   const proxyPointerStartYRef = useRef<number | null>(null);
   const [isMobileTerminal, setIsMobileTerminal] = useState(false);
   const mobileInputBridgeRef = useRef<HTMLInputElement>(null);
@@ -332,6 +333,8 @@ export default function TerminalView({ session, host, onBack, onSessionUpdate }:
       setCurrentSession((prev) => {
         if (prev.id !== updatedId) return prev;
         const merged = { ...prev, ...updated, id: updatedId };
+        const changed = Object.keys(merged).some((key) => (merged as any)[key] !== (prev as any)[key]);
+        if (!changed) return prev;
         onSessionUpdate(merged);
         return merged;
       });
@@ -344,7 +347,10 @@ export default function TerminalView({ session, host, onBack, onSessionUpdate }:
     socket.onParticipantUpdate = (sessionId, participants) => {
       if (sessionId !== currentSessionIdRef.current) return;
       const interactive = participants.filter((p) => p.capabilities.includes('input')).length;
-      setParticipantCounts({ interactive, viewers: Math.max(0, participants.length - interactive) });
+      const viewers = Math.max(0, participants.length - interactive);
+      setParticipantCounts((prev) => (
+        prev.interactive === interactive && prev.viewers === viewers ? prev : { interactive, viewers }
+      ));
     };
 
     // Connect and attach (attach is queued until connection opens)
@@ -388,7 +394,10 @@ export default function TerminalView({ session, host, onBack, onSessionUpdate }:
 
     // Visibility change: reconnect when page becomes visible again
     const visibilityCleanup = onVisibilityChange((visible) => {
-      if (visible && socket.connectionState !== 'connected') {
+      if (!visible) return;
+      if (socket.connectionState === 'connected') {
+        socket.probeConnection();
+      } else {
         // Reconnect and re-attach
         socket.connect(hostUrl);
         socket.attach(currentSessionIdRef.current);
@@ -397,7 +406,10 @@ export default function TerminalView({ session, host, onBack, onSessionUpdate }:
 
     // Online/offline events
     const connCleanup = onConnectionChange((online) => {
-      if (online && socket.connectionState !== 'connected') {
+      if (!online) return;
+      if (socket.connectionState === 'connected') {
+        socket.probeConnection();
+      } else {
         socket.connect(hostUrl);
         socket.attach(currentSessionIdRef.current);
       }
@@ -419,6 +431,7 @@ export default function TerminalView({ session, host, onBack, onSessionUpdate }:
       releaseWakeLockCleanup();
       releaseWakeLock();
       if (fitTimeoutRef.current) clearTimeout(fitTimeoutRef.current);
+      if (mobileProxyScrollRafRef.current !== null) cancelAnimationFrame(mobileProxyScrollRafRef.current);
       socket.detach(attachedSessionIdRef.current);
       socket.disconnect();
       socketRef.current = null;
@@ -692,10 +705,14 @@ export default function TerminalView({ session, host, onBack, onSessionUpdate }:
     const proxy = scrollProxyRef.current;
     if (!term || !proxy || proxySyncingFromTermRef.current) return;
 
-    proxySyncingFromProxyRef.current = true;
-    term.scrollToLine(proxyTopToLine(proxy.scrollTop));
-    requestAnimationFrame(() => {
-      proxySyncingFromProxyRef.current = false;
+    if (mobileProxyScrollRafRef.current !== null) return;
+    mobileProxyScrollRafRef.current = requestAnimationFrame(() => {
+      mobileProxyScrollRafRef.current = null;
+      proxySyncingFromProxyRef.current = true;
+      term.scrollToLine(proxyTopToLine(proxy.scrollTop));
+      requestAnimationFrame(() => {
+        proxySyncingFromProxyRef.current = false;
+      });
     });
   };
 
@@ -725,8 +742,10 @@ export default function TerminalView({ session, host, onBack, onSessionUpdate }:
   };
 
   const connClass = connectionState === 'connected' ? 'conn-connected' :
+    connectionState === 'stalled' ? 'conn-stalled' :
     connectionState === 'reconnecting' ? 'conn-reconnecting' : 'conn-disconnected';
   const connLabel = connectionState === 'connected' ? 'Connected' :
+    connectionState === 'stalled' ? 'Network stalled' :
     connectionState === 'reconnecting' ? 'Reconnecting...' : 'Disconnected';
 
   const isRunning = currentSession.status === 'running' || currentSession.status === 'starting';
@@ -753,6 +772,9 @@ export default function TerminalView({ session, host, onBack, onSessionUpdate }:
             <span className="conn-dot" />
             {connLabel}
           </div>
+          {connectionState !== 'connected' && (
+            <button className="btn btn-secondary btn-sm" onClick={() => socketRef.current?.forceReconnect('manual_button')}>Reconnect</button>
+          )}
 
           {isRunning && !restarting && (
             <button className="btn btn-danger btn-sm" onClick={() => setShowKillConfirm(true)}>Kill</button>

@@ -46,12 +46,15 @@ Authorization: Bearer <token>
 Connect to:
 
 ```text
-/ws?token=<token>
+/ws
 ```
 
 Protocol:
 
 - `0x00` prefix: terminal binary I/O
 - `0x01` prefix: control JSON
+- when `AUTH_TOKEN` is configured, first control message must be `{ "type": "auth", "token": "<token>", "clientId": "..." }`
+
+URL query tokens are not supported. Browser UI uses REST endpoints for kill/restart. WebSocket `kill` and `restart` remain capability-gated protocol actions and require explicit controller capabilities; missing capabilities return `CAPABILITY_REQUIRED`.
 
 The browser attaches to a tmux-backed session. Detaching the WebSocket does not stop the underlying agent process.

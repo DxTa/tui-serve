@@ -34,6 +34,7 @@ jobs:
           node-version: '22'
           cache: 'npm'
           cache-dependency-path: |
+            package-lock.json
             server/package-lock.json
             tui-web/package-lock.json
 
@@ -73,56 +74,47 @@ jobs:
           if-no-files-found: error
 
   # ── Build macOS arm64 bundle ─────────────────────────────────
-  # build-macos:
-  #   runs-on: macos-14  # Apple Silicon (M1)
-  #   env:
-  #     MACOSX_DEPLOYMENT_TARGET: '12.0'
-  #   steps:
-  #     - name: Checkout
-  #       uses: actions/checkout@v4
-  #
-  #     - name: Setup Node.js 22
-  #       uses: actions/setup-node@v4
-  #       with:
-  #         node-version: '22'
-  #         cache: 'npm'
-  #         cache-dependency-path: |
-  #           package-lock.json
-  #           server/package-lock.json
-  #           tui-web/package-lock.json
-  #
-  #     - name: Install tmux
-  #       run: brew install tmux
-  #
-  #     - name: Get version from tag
-  #       id: version
-  #       run: echo "VERSION=${GITHUB_REF_NAME#v}" >> $GITHUB_OUTPUT
-  #
-  #     - name: Build macOS bundle
-  #       run: |
-  #         chmod +x packaging/build-macos.sh
-  #         ./packaging/build-macos.sh ${{ steps.version.outputs.VERSION }}
-  #       env:
-  #         NODE_VERSION: '22.15.0'
-  #
-  #     - name: Generate SHA256 checksums
-  #       run: |
-  #         cd packaging/dist
-  #         shasum -a 256 *.tar.gz > checksums-macos-arm64.txt
-  #         cat checksums-macos-arm64.txt
-  #
-  #     - name: Upload macOS artifact
-  #       uses: actions/upload-artifact@v4
-  #       with:
-  #         name: tui-serve-${{ steps.version.outputs.VERSION }}-macos-arm64
-  #         path: |
-  #           packaging/dist/*.tar.gz
-  #           packaging/dist/checksums-*.txt
-  #         if-no-files-found: error
+  build-macos:
+    runs-on: macos-14-arm64  # Apple Silicon (M1/M2)
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    env:
+      MACOSX_DEPLOYMENT_TARGET: '12.0'
+    needs: [build-deb]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: |
+            package-lock.json
+            server/package-lock.json
+            tui-web/package-lock.json
+
+      - name: Build macOS bundle
+        run: |
+          chmod +x packaging/build-macos.sh
+          ./packaging/build-macos.sh ${{ needs.build-deb.outputs.version }}
+        env:
+          NODE_VERSION: '22.15.0'
+
+      - name: Upload macOS artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tui-serve-${{ needs.build-deb.outputs.version }}-macos-arm64
+          path: |
+            packaging/dist/*.tar.gz
+            packaging/dist/*.sha256
+          if-no-files-found: error
 
   # ── Create GitHub Release ─────────────────────────────────────
   release:
-    needs: [build-deb]
+    needs: [build-deb, build-macos]
     runs-on: ubuntu-24.04
     steps:
       - name: Resolve version
@@ -135,11 +127,11 @@ jobs:
           name: tui-serve-${{ steps.version.outputs.VERSION }}-amd64-deb
           path: release-artifacts/
 
-      # - name: Download macOS artifact
-      #   uses: actions/download-artifact@v4
-      #   with:
-      #     name: tui-serve-${{ steps.version.outputs.VERSION }}-macos-arm64
-      #     path: release-artifacts/
+      - name: Download macOS artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: tui-serve-${{ steps.version.outputs.VERSION }}-macos-arm64
+          path: release-artifacts/
 
       - name: List release artifacts
         run: ls -lh release-artifacts/
@@ -164,11 +156,11 @@ jobs:
 
             Open `http://<host>:5555` and enter your auth token.
 
-            ### macOS (arm64) — coming soon
+            ## Install (macOS arm64)
 
             ```bash
             tar xzf tui-serve-${{ steps.version.outputs.VERSION }}-macos-arm64.tar.gz
-            cd tui-serve-${{ steps.version.outputs.VERSION }}
+            cd tui-serve-${{ steps.version.outputs.VERSION }}-macos-arm64
             ./deploy/scripts/install-macos.sh
             ```
 

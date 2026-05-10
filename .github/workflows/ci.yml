@@ -4,6 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
 
 jobs:
   build:
@@ -33,37 +34,62 @@ jobs:
             bash -n "$f"
           done
       - name: Packaging assertion tests
-        run: bash packaging/scripts/test-packaging-scripts.sh || true
+        run: bash packaging/scripts/test-packaging-scripts.sh
 
-  # build-macos:
-  #   runs-on: macos-14
-  #   env:
-  #     MACOSX_DEPLOYMENT_TARGET: '12.0'
-  #   steps:
-  #     - uses: actions/checkout@v4
-  #     - uses: actions/setup-node@v4
-  #       with:
-  #         node-version: 22
-  #         cache: npm
-  #         cache-dependency-path: |
-  #           package-lock.json
-  #           server/package-lock.json
-  #           tui-web/package-lock.json
-  #     - name: Install root dependencies
-  #       run: npm ci
-  #     - name: Install server dependencies
-  #       run: npm ci
-  #       working-directory: server
-  #     - name: Install web dependencies
-  #       run: npm ci
-  #       working-directory: tui-web
-  #     - name: Build shared package
-  #       run: npm run build --prefix packages/shared
-  #     - name: Build server
-  #       run: npm run build --prefix server
-  #     - name: Build frontend
-  #       run: npm run build --prefix tui-web
-  #     - name: Verify native module loadability
-  #       run: |
-  #         cd server
-  #         node -e "import('node-pty').then(() => console.log('✅ node-pty loads ok')).catch(e => { console.error('❌ node-pty failed:', e.message); process.exit(1) })"
+  build-linux-deb:
+    name: Build Linux .deb package
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            server/package-lock.json
+            tui-web/package-lock.json
+      - name: Verify Docker is available
+        run: docker --version
+      - name: Build Linux amd64 .deb
+        run: |
+          chmod +x packaging/build-deb.sh
+          ./packaging/build-deb.sh --docker 0.0.0+pr.${{ github.event.pull_request.number || github.run_number }} amd64
+        env:
+          NODE_VERSION: '22.15.0'
+      - name: Upload Linux package artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tui-serve-linux-amd64-deb
+          path: packaging/dist/*.deb
+          if-no-files-found: error
+
+  build-macos:
+    name: Build macOS arm64 bundle
+    runs-on: macos-14-arm64
+    env:
+      MACOSX_DEPLOYMENT_TARGET: '12.0'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            server/package-lock.json
+            tui-web/package-lock.json
+      - name: Build macOS bundle
+        run: |
+          chmod +x packaging/build-macos.sh
+          ./packaging/build-macos.sh 0.0.0+pr.${{ github.event.pull_request.number || github.run_number }}
+        env:
+          NODE_VERSION: '22.15.0'
+      - name: Upload macOS bundle artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tui-serve-macos-arm64
+          path: |
+            packaging/dist/*.tar.gz
+            packaging/dist/*.sha256
+          if-no-files-found: error

@@ -529,7 +529,10 @@ function flushClientOutput(client: ClientState): void {
     : Buffer.concat(client.outputBuffer, client.outputBufferBytes);
   client.outputBuffer = [];
   client.outputBufferBytes = 0;
-  sendRaw(client.ws, buildBinaryFrame(client.sessionId, payload));
+  if (!sendRaw(client.ws, buildBinaryFrame(client.sessionId, payload))) {
+    logger.warn('ws.output.backpressure_disconnect', { sessionId: client.sessionId, bufferedAmount: client.ws.bufferedAmount });
+    client.ws.close(1013, 'WebSocket backpressure');
+  }
 }
 
 function sendRaw(ws: WebSocket, payload: Buffer): boolean {

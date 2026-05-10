@@ -75,7 +75,7 @@ jobs:
 
   # ── Build macOS arm64 bundle ─────────────────────────────────
   build-macos:
-    runs-on: macos-14-arm64  # Apple Silicon (M1/M2)
+    runs-on: macos-14  # Apple Silicon (M1)
     if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     env:
       MACOSX_DEPLOYMENT_TARGET: '12.0'

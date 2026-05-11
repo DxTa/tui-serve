@@ -30,7 +30,7 @@ function encodeCwdClaude(cwd: string): string {
 
 // ── Per-agent extraction ──
 
-function extractPiSessionId(cwd: string): string | null {
+function extractPiSessionId(cwd: string, createdAt?: string): string | null {
   try {
     const encoded = encodeCwdPi(cwd);
     const sessionsDir = join(HOME, '.pi', 'agent', 'sessions', encoded);
@@ -42,13 +42,70 @@ function extractPiSessionId(cwd: string): string | null {
       .filter(d => d.isFile() && d.name.endsWith('.jsonl'))
       .sort((a, b) => b.name.localeCompare(a.name)); // filenames start with sortable timestamp
 
+    // Parse all matching .jsonl files into candidates with timestamps.
+    // Pi filenames use the format: YYYY-MM-DDTHH-MM-SS-mmmZ_<uuid>.jsonl
+    // where dashes replace colons in the ISO timestamp for filesystem safety.
+    type Candidate = { id: string; fileTimeMs: number; fileName: string };
+    const candidates: Candidate[] = [];
+
     for (const entry of entries) {
       const file = join(sessionsDir, entry.name);
       try {
         const firstLine = readFileSync(file, 'utf-8').split('\n')[0];
         const header = JSON.parse(firstLine);
-        if (header.id && (!header.cwd || header.cwd === cwd)) return header.id;
+        if (!header.id || (header.cwd && header.cwd !== cwd)) continue;
+
+        // Extract timestamp from filename: YYYY-MM-DDTHH-MM-SS-mmmZ
+        // Convert filesystem-safe dashes back to ISO colons for parsing.
+        // Format: 2026-05-11T19-03-40-425Z -> 2026-05-11T19:03:40.425Z
+        const tsMatch = entry.name.match(/^(\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z)_/);
+        if (tsMatch) {
+          const isoTs = tsMatch[1]
+            .replace(/T(\d{2})-(\d{2})-(\d{2})-(\d{3})Z$/, 'T$1:$2:$3.$4Z');
+          const fileTimeMs = new Date(isoTs).getTime();
+          if (!isNaN(fileTimeMs)) {
+            candidates.push({ id: header.id, fileTimeMs, fileName: entry.name });
+          }
+        }
       } catch { continue; }
+    }
+
+    // Strategy 1: If createdAt is provided, find the .jsonl file whose timestamp
+    // is closest to the tmux session creation time. This works because when Pi
+    // starts a FRESH session (no --session flag), it creates a new .jsonl file
+    // within seconds of the tmux session being created.
+    //
+    // This strategy FAILS for resumed sessions where Pi reuses an older .jsonl
+    // file (via --session <id>), but those sessions should already have their
+    // agentSessionId set via opts.resumeFrom and shouldn't need extraction.
+    if (createdAt && candidates.length > 0) {
+      const createdMs = new Date(createdAt).getTime();
+      if (!isNaN(createdMs)) {
+        // Sort candidates by distance to creation time (ascending)
+        const sorted = [...candidates].sort((a, b) =>
+          Math.abs(a.fileTimeMs - createdMs) - Math.abs(b.fileTimeMs - createdMs)
+        );
+        const closest = sorted[0];
+        // The .jsonl file should be created within ±10 seconds of the tmux session.
+        // Allow wider buffer for slow startup but prefer tight matches.
+        if (Math.abs(closest.fileTimeMs - createdMs) < 10_000) {
+          return closest.id;
+        }
+      }
+    }
+
+    // Strategy 2: Most recently modified file in the directory. When Pi is
+    // actively running, it continuously writes to its .jsonl file. The file
+    // that was most recently modified (by mtime) is likely the one being used
+    // by a currently-running Pi session. If multiple Pi sessions run in the
+    // same cwd, each writes to its own file, and the most recently active one
+    // has the most recent mtime.
+    //
+    // This is a heuristic and may return the wrong ID if multiple sessions
+    // are active. It's used as a fallback when Strategy 1 doesn't apply.
+    for (const candidate of candidates) {
+      // candidates are sorted newest-first by filename timestamp
+      return candidate.id;
     }
     return null;
   } catch {
@@ -56,7 +113,7 @@ function extractPiSessionId(cwd: string): string | null {
   }
 }
 
-function extractClaudeSessionId(cwd: string): string | null {
+function extractClaudeSessionId(cwd: string, _createdAt?: string): string | null {
   try {
     const encoded = encodeCwdClaude(cwd);
     const sessionsDir = join(HOME, '.claude', 'projects', encoded);
@@ -77,7 +134,7 @@ function extractClaudeSessionId(cwd: string): string | null {
   }
 }
 
-function extractOpencodeSessionId(cwd: string): string | null {
+function extractOpencodeSessionId(cwd: string, _createdAt?: string): string | null {
   try {
     const dbPath = join(HOME, '.local', 'share', 'opencode', 'opencode.db');
     if (!existsSync(dbPath)) return null;
@@ -93,7 +150,7 @@ function extractOpencodeSessionId(cwd: string): string | null {
   }
 }
 
-function extractCodexSessionId(cwd: string): string | null {
+function extractCodexSessionId(cwd: string, _createdAt?: string): string | null {
   try {
     // Find latest state_*.sqlite
     const codexDir = join(HOME, '.codex');
@@ -122,7 +179,7 @@ function extractCodexSessionId(cwd: string): string | null {
 
 export type AgentType = 'pi' | 'claude' | 'opencode' | 'codex' | 'shell';
 
-const EXTRACTORS: Record<AgentType, (cwd: string) => string | null> = {
+const EXTRACTORS: Record<AgentType, (cwd: string, createdAt?: string) => string | null> = {
   pi: extractPiSessionId,
   claude: extractClaudeSessionId,
   opencode: extractOpencodeSessionId,
@@ -130,11 +187,13 @@ const EXTRACTORS: Record<AgentType, (cwd: string) => string | null> = {
   shell: () => null, // Shell sessions have no agent session ID
 };
 
-/** Extract the most recent agent session ID for a given agent type and working directory */
-export function extractSessionId(agentType: string, cwd: string): string | null {
+/** Extract the agent session ID for a given agent type and working directory.
+ *  When createdAt is provided for Pi sessions, uses time-based matching to
+ *  find the correct session file when multiple sessions share a CWD. */
+export function extractSessionId(agentType: string, cwd: string, createdAt?: string): string | null {
   const extractor = EXTRACTORS[agentType as AgentType];
   if (!extractor) return null;
-  return extractor(cwd);
+  return extractor(cwd, createdAt);
 }
 
 // ── Resume commands ──

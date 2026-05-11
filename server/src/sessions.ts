@@ -91,6 +91,21 @@ function checkAllSessions(): void {
           newStatus,
           crashCount: session.crashCount + 1,
         });
+
+        // On crash detection, try to extract agentSessionId if missing.
+        // This is critical for resume to work — without agentSessionId,
+        // the resume feature can't build the correct --session command.
+        if (!session.agentSessionId && session.commandId !== 'shell') {
+          try {
+            const agentSessionId = extractSessionId(session.agentType, session.cwd, session.createdAt);
+            if (agentSessionId) {
+              store.setAgentSessionId(session.id, agentSessionId);
+              logger.info('healthCheck: agentSessionId extracted on crash', { sessionId: session.id, agentSessionId });
+            }
+          } catch (err) {
+            logger.warn('healthCheck: agentSessionId extraction failed on crash', { sessionId: session.id, error: String(err) });
+          }
+        }
       }
     }
   }
@@ -188,18 +203,36 @@ export function createSession(opts: { id?: string; title?: string; commandId: st
   // Extract agent session ID after a delay (agent needs time to initialize)
   // Skip if we already set it from resumeFrom
   if (commandId !== 'shell' && !opts.resumeFrom) {
-    setTimeout(() => {
-      try {
-        const agentSessionId = extractSessionId(commandId, opts.cwd);
-        if (agentSessionId) {
-          store.setAgentSessionId(sessionId, agentSessionId);
-          logger.info('session.agentId.extracted', { sessionId, agentSessionId });
-          logEvent(sessionId, 'agent_id_extracted', { agentSessionId });
+    // Retry extraction up to 3 times with increasing delays.
+    // Agents can take several seconds to write their session file,
+    // especially under load.
+    const maxAttempts = 3;
+    const attempt = (attemptNum: number, delayMs: number) => {
+      setTimeout(() => {
+        try {
+          // Check if already set (by a previous attempt or health check)
+          const current = store.getSession(sessionId);
+          if (current?.agentSessionId) return;
+
+          const agentSessionId = extractSessionId(commandId, opts.cwd, session.createdAt);
+          if (agentSessionId) {
+            store.setAgentSessionId(sessionId, agentSessionId);
+            logger.info('session.agentId.extracted', { sessionId, agentSessionId, attempt: attemptNum });
+            logEvent(sessionId, 'agent_id_extracted', { agentSessionId, attempt: attemptNum });
+          } else if (attemptNum < maxAttempts) {
+            attempt(attemptNum + 1, delayMs * 2);
+          } else {
+            logger.warn('session.agentId.extraction_exhausted', { sessionId, attempts: maxAttempts });
+          }
+        } catch (err) {
+          logger.warn('session.agentId.extraction_failed', { sessionId, error: String(err), attempt: attemptNum });
+          if (attemptNum < maxAttempts) {
+            attempt(attemptNum + 1, delayMs * 2);
+          }
         }
-      } catch (err) {
-        logger.warn('session.agentId.extraction_failed', { sessionId, error: String(err) });
-      }
-    }, 3000); // 3 second delay for agent to initialize
+      }, delayMs);
+    };
+    attempt(1, 3000);
   }
 
   // Try to get the PID after a short delay
@@ -229,7 +262,7 @@ export function killSession(sessionId: string, confirm: boolean): Session | { er
     // If an id already exists, keep it: `pi --session <id>` appends to that file.
     if (!session.agentSessionId && session.commandId !== 'shell') {
       try {
-        const agentSessionId = extractSessionId(session.commandId, session.cwd);
+      const agentSessionId = extractSessionId(session.commandId, session.cwd, session.createdAt);
         if (agentSessionId) {
           session.agentSessionId = agentSessionId;
           store.setAgentSessionId(sessionId, agentSessionId);

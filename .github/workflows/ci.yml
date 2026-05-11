@@ -123,10 +123,11 @@ jobs:
         run: |
           BUNDLE_DIR="$(ls -d packaging/dist/tui-serve-*-macos-arm64)"
           
-          # Create config and env for loopback (no auth required)
-          mkdir -p /usr/local/etc/tui-serve
-          mkdir -p /usr/local/var/lib/tui-serve
-          mkdir -p /usr/local/var/log/tui-serve
+          # Create config and env dirs (need sudo on macOS runner)
+          sudo mkdir -p /usr/local/etc/tui-serve
+          sudo mkdir -p /usr/local/var/lib/tui-serve
+          sudo mkdir -p /usr/local/var/log/tui-serve
+          sudo chown -R $(whoami) /usr/local/etc/tui-serve /usr/local/var/lib/tui-serve /usr/local/var/log/tui-serve
           
           cp "${BUNDLE_DIR}/server/default-config.json" /usr/local/etc/tui-serve/
           
@@ -150,6 +151,7 @@ jobs:
           sudo cp -R "${BUNDLE_DIR}/web" /usr/local/opt/tui-serve/
           sudo cp -R "${BUNDLE_DIR}/bin" /usr/local/opt/tui-serve/
           sudo cp -R "${BUNDLE_DIR}/deploy" /usr/local/opt/tui-serve/
+          sudo chown -R $(whoami) /usr/local/opt/tui-serve
           sudo xattr -cr /usr/local/opt/tui-serve 2>/dev/null || true
           
           echo "AUTH_TOKEN=${AUTH_TOKEN}" >> "$GITHUB_ENV"

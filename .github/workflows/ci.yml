@@ -207,22 +207,29 @@ jobs:
       - name: Test session API (create + list)
         run: |
           echo "=== Create test session ==="
-          SESSION=$(curl -sf -X POST http://127.0.0.1:5555/api/sessions \
+          SESSION=$(curl -s -w '\n%{http_code}' -X POST http://127.0.0.1:5555/api/sessions \
             -H "Authorization: Bearer ${AUTH_TOKEN}" \
             -H "Content-Type: application/json" \
             -d '{"name":"ci-test","commandLabels":["default"]}')
-          echo "$SESSION" | python3 -m json.tool
-          
-          SESSION_ID=$(echo "$SESSION" | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
+          HTTP_CODE=$(echo "$SESSION" | tail -1)
+          BODY=$(echo "$SESSION" | sed '$d')
+          echo "Response ($HTTP_CODE): $BODY"
+          if [ "$HTTP_CODE" != "200" ] && [ "$HTTP_CODE" != "201" ]; then
+            echo "❌ Session create failed with HTTP $HTTP_CODE"
+            exit 1
+          fi
+          SESSION_ID=$(echo "$BODY" | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
           echo "✅ Created session: $SESSION_ID"
           
           echo "=== List sessions ==="
-          curl -sf http://127.0.0.1:5555/api/sessions \
+          curl -s http://127.0.0.1:5555/api/sessions \
             -H "Authorization: Bearer ${AUTH_TOKEN}" | python3 -m json.tool
           
           echo "=== Kill session ==="
-          curl -sf -X DELETE "http://127.0.0.1:5555/api/sessions/${SESSION_ID}" \
-            -H "Authorization: Bearer ${AUTH_TOKEN}"
+          curl -s -w '\n%{http_code}' -X POST "http://127.0.0.1:5555/api/sessions/${SESSION_ID}/kill" \
+            -H "Authorization: Bearer ${AUTH_TOKEN}" \
+            -H "Content-Type: application/json" \
+            -d '{"confirm":true}'
           echo "✅ Session killed"
 
       - name: Install Pi CLI and test web UI via Chrome headless

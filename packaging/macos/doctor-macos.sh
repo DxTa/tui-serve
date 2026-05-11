@@ -1,10 +1,8 @@
 #!/usr/bin/env bash
 # doctor-macos.sh — Health check script for tui-serve on macOS
 #
-# Run this to diagnose common installation issues on macOS.
-#
-# Usage: ./packaging/macos/doctor-macos.sh
-#     or: /usr/local/opt/tui-serve/deploy/scripts/doctor-macos.sh (after install)
+# Auto-detects system vs user install mode.
+# Run after install to verify everything is working.
 
 set -euo pipefail
 
@@ -12,14 +10,43 @@ PASS=0
 FAIL=0
 WARN=0
 
-INSTALL_BASE="/usr/local/opt/tui-serve"
-CONFIG_DIR="/usr/local/etc/tui-serve"
-APP_LOG_DIR="/usr/local/var/log/tui-serve"
-DATA_DIR="/usr/local/var/lib/tui-serve"
-LOG_DIR="/usr/local/var/log"
+# ── Detect install mode ──
+USER_BASE="$HOME/.local/opt/tui-serve"
+SYSTEM_BASE="/usr/local/opt/tui-serve"
+
+if [ -f "${USER_BASE}/.install-mode" ]; then
+  INSTALL_MODE="$(cat "${USER_BASE}/.install-mode")"
+  INSTALL_BASE="$USER_BASE"
+elif [ -f "${SYSTEM_BASE}/.install-mode" ]; then
+  INSTALL_MODE="$(cat "${SYSTEM_BASE}/.install-mode")"
+  INSTALL_BASE="$SYSTEM_BASE"
+elif [ -x "${USER_BASE}/node/bin/node" ]; then
+  INSTALL_MODE="user"
+  INSTALL_BASE="$USER_BASE"
+elif [ -x "${SYSTEM_BASE}/node/bin/node" ]; then
+  INSTALL_MODE="system"
+  INSTALL_BASE="$SYSTEM_BASE"
+else
+  INSTALL_MODE="unknown"
+  INSTALL_BASE=""
+fi
+
+if [ "$INSTALL_MODE" = "user" ]; then
+  CONFIG_DIR="$HOME/.config/tui-serve"
+  DATA_DIR="$HOME/.local/share/tui-serve"
+  APP_LOG_DIR="$HOME/Library/Logs/tui-serve"
+elif [ "$INSTALL_MODE" = "system" ]; then
+  CONFIG_DIR="/usr/local/etc/tui-serve"
+  DATA_DIR="/usr/local/var/lib/tui-serve"
+  APP_LOG_DIR="/usr/local/var/log/tui-serve"
+else
+  CONFIG_DIR="/usr/local/etc/tui-serve"
+  DATA_DIR="/usr/local/var/lib/tui-serve"
+  APP_LOG_DIR="/usr/local/var/log/tui-serve"
+fi
 
 # Detect if we're running from the installed package or from source
-if [ -x "${INSTALL_BASE}/node/bin/node" ]; then
+if [ -n "$INSTALL_BASE" ] && [ -x "${INSTALL_BASE}/node/bin/node" ]; then
   NODE_BIN="${INSTALL_BASE}/node/bin/node"
   APP_DIR="${INSTALL_BASE}/server"
   LAUNCHER="${INSTALL_BASE}/bin/tui-serve.sh"
@@ -62,6 +89,8 @@ warn() {
 }
 
 echo "=== TUI Serve — macOS Doctor ==="
+echo "  Install mode: ${INSTALL_MODE}"
+echo "  Install base: ${INSTALL_BASE:-not found}"
 echo ""
 
 # ── macOS version ──
@@ -87,9 +116,9 @@ echo ""
 
 # ── Bundled Node.js ──
 echo "── Bundled Node.js ──"
-if [ -x "${INSTALL_BASE}/node/bin/node" ]; then
-  BUNDLED_VERSION="$("${INSTALL_BASE}/node/bin/node" --version 2>/dev/null || echo "unknown")"
-  BUNDLED_ARCH="$("${INSTALL_BASE}/node/bin/node" -e "console.log(process.arch)" 2>/dev/null || echo "unknown")"
+if [ -n "$NODE_BIN" ] && [ -x "$NODE_BIN" ]; then
+  BUNDLED_VERSION="$("$NODE_BIN" --version 2>/dev/null || echo "unknown")"
+  BUNDLED_ARCH="$("$NODE_BIN" -e "console.log(process.arch)" 2>/dev/null || echo "unknown")"
   echo "  ✅ Bundled Node.js: ${BUNDLED_VERSION} (${BUNDLED_ARCH})"
   PASS=$((PASS + 1))
 
@@ -117,7 +146,6 @@ echo ""
 # ── Native modules ──
 echo "── Native modules ──"
 if [ -n "$NODE_BIN" ] && [ -n "$APP_DIR" ]; then
-  # Test node-pty loadability
   if [ -d "${APP_DIR}/node_modules/node-pty" ]; then
     if (cd "${APP_DIR}" && "$NODE_BIN" -e "import('node-pty').then(() => console.log('ok'))") 2>/dev/null | grep -q ok; then
       echo "  ✅ node-pty: loads successfully"
@@ -182,12 +210,12 @@ if [ -n "${LAUNCHER}" ] && [ -f "${LAUNCHER}" ]; then
     echo "     Fix: chmod 755 ${LAUNCHER}"
     FAIL=$((FAIL + 1))
   fi
-  # Check launcher references correct paths
-  if grep -q 'INSTALL_BASE="/usr/local/opt/tui-serve"' "${LAUNCHER}"; then
+  # Check launcher references correct install base
+  if grep -q "INSTALL_BASE=\"${INSTALL_BASE}\"" "${LAUNCHER}" 2>/dev/null; then
     echo "  ✅ Launcher references correct install base"
     PASS=$((PASS + 1))
   else
-    echo "  ⚠️  Launcher may reference wrong install base"
+    echo "  ⚠️  Launcher may reference wrong install base (expected: ${INSTALL_BASE})"
     WARN=$((WARN + 1))
   fi
 elif [ -n "${LAUNCHER}" ]; then
@@ -228,7 +256,7 @@ if [ -f "$PLIST_PATH" ]; then
   echo "  ✅ launchd plist: ${PLIST_PATH}"
   PASS=$((PASS + 1))
 
-  # Check plist uses launcher wrapper, not direct node invocation
+  # Check plist uses launcher wrapper
   if grep -q 'tui-serve.sh' "$PLIST_PATH"; then
     echo "  ✅ plist invokes launcher wrapper"
     PASS=$((PASS + 1))
@@ -243,7 +271,6 @@ if [ -f "$PLIST_PATH" ]; then
     echo "  ✅ Service is loaded in launchctl"
     PASS=$((PASS + 1))
 
-    # Extract PID
     PID="$(echo "$SERVICE_STATUS" | awk '{print $1}')"
     if [ "$PID" != "-" ] && [ "$PID" != "0" ] 2>/dev/null; then
       echo "  ✅ Service is running (PID: ${PID})"
@@ -273,7 +300,7 @@ check_xattr() {
     QUARANTINE="$(xattr -p com.apple.quarantine "$file" 2>/dev/null || true)"
     if [ -n "$QUARANTINE" ]; then
       echo "  ❌ ${label}: has quarantine attribute"
-      echo "     Fix: xattr -cr /usr/local/opt/tui-serve"
+      echo "     Fix: xattr -cr ${INSTALL_BASE}"
       FAIL=$((FAIL + 1))
     else
       echo "  ✅ ${label}: no quarantine attribute"
@@ -282,12 +309,10 @@ check_xattr() {
   fi
 }
 
-if [ -d "${INSTALL_BASE}" ]; then
-  # Check key binaries for quarantine
+if [ -n "$INSTALL_BASE" ] && [ -d "${INSTALL_BASE}" ]; then
   check_xattr "${INSTALL_BASE}/node/bin/node" "Node.js binary"
   check_xattr "${INSTALL_BASE}/bin/tui-serve.sh" "Launcher wrapper"
 
-  # Check if any .node files have quarantine
   NODE_FILES="$(find "${INSTALL_BASE}" -name '*.node' -type f 2>/dev/null || true)"
   QUARANTINE_COUNT=0
   for f in $NODE_FILES; do

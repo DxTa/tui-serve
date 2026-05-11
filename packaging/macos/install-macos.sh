@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 # install-macos.sh — Install TUI Serve on macOS
 #
-# Usage: ./install-macos.sh [--user USER]
+# Usage: ./install-macos.sh [--user]
 #
-#   --user USER  Run the service as this user (default: current user)
+#   --user    Install to user home directory (no sudo required).
+#             Paths: ~/.local/opt/tui-serve, ~/.config/tui-serve, etc.
+#             Default (without --user): system install to /usr/local (requires sudo).
 #
 # Prerequisites:
 #   - tmux (brew install tmux)
@@ -12,40 +14,51 @@
 
 set -euo pipefail
 
-# ── Guard: don't run as root ──
-if [ "${EUID:-$(id -u)}" -eq 0 ] 2>/dev/null || [ "$(id -u)" -eq 0 ]; then
-  echo "❌ Do not run this script as root or with sudo." >&2
-  echo "   The script uses sudo internally where needed." >&2
-  exit 1
-fi
-
-# ── Argument parsing ──
-INSTALL_USER="$(whoami)"
+# ── Install mode detection ──
+INSTALL_MODE="system"
 while [ $# -gt 0 ]; do
   case "$1" in
-    --user) INSTALL_USER="$2"; shift 2 ;;
+    --user) INSTALL_MODE="user"; shift ;;
+    --system) INSTALL_MODE="system"; shift ;;
     *) shift ;;
   esac
 done
 
-# Validate: --user must match current user (launchd runs as installing user)
-if [ "$INSTALL_USER" != "$(whoami)" ]; then
-  echo "⚠️  Warning: --user '$INSTALL_USER' differs from current user '$(whoami)'" >&2
-  echo "   The launchd service will run as the installing user ($(whoami))." >&2
-  echo "   Setting INSTALL_USER to $(whoami) for correct file ownership." >&2
-  INSTALL_USER="$(whoami)"
+# ── Set paths based on install mode ──
+if [ "$INSTALL_MODE" = "user" ]; then
+  INSTALL_BASE="$HOME/.local/opt/tui-serve"
+  CONFIG_DIR="$HOME/.config/tui-serve"
+  DATA_DIR="$HOME/.local/share/tui-serve"
+  LOG_DIR="$HOME/Library/Logs"
+  APP_LOG_DIR="$HOME/Library/Logs/tui-serve"
+  NEEDS_SUDO=false
+  echo "╔══════════════════════════════════════════════════════════╗"
+  echo "║  TUI Serve — macOS Install (user mode)                   ║"
+  echo "║  No sudo required — installing to your home directory    ║"
+  echo "╚══════════════════════════════════════════════════════════╝"
+else
+  INSTALL_BASE="/usr/local/opt/tui-serve"
+  CONFIG_DIR="/usr/local/etc/tui-serve"
+  DATA_DIR="/usr/local/var/lib/tui-serve"
+  LOG_DIR="/usr/local/var/log"
+  APP_LOG_DIR="/usr/local/var/log/tui-serve"
+  NEEDS_SUDO=true
+  echo "╔══════════════════════════════════════════════════════════╗"
+  echo "║  TUI Serve — macOS Install (system mode)                 ║"
+  echo "║  Requires sudo — installing to /usr/local                ║"
+  echo "╚══════════════════════════════════════════════════════════╝"
 fi
 
-# Resolve the install base directory relative to this script
-# Script is at: <bundle>/deploy/scripts/install-macos.sh
-# Bundle root: <bundle>/
+# ── Guard: don't run as root ──
+if [ "$(id -u)" -eq 0 ]; then
+  echo "❌ Do not run this script as root or with sudo." >&2
+  echo "   The script uses sudo internally where needed (system mode)." >&2
+  exit 1
+fi
+
+INSTALL_USER="$(whoami)"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 BUNDLE_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
-INSTALL_BASE="/usr/local/opt/tui-serve"
-CONFIG_DIR="/usr/local/etc/tui-serve"
-DATA_DIR="/usr/local/var/lib/tui-serve"
-LOG_DIR="/usr/local/var/log"
-APP_LOG_DIR="/usr/local/var/log/tui-serve"
 PORT="${PORT:-5555}"
 BIND_HOST="${BIND_HOST:-${TUI_SERVE_BIND_HOST:-0.0.0.0}}"
 GENERATED_AUTH_TOKEN=""
@@ -62,12 +75,23 @@ is_interactive() {
   [ -t 0 ] && [ -t 1 ] && [ "${TUI_SERVE_NONINTERACTIVE:-}" != "1" ]
 }
 
-echo "=== TUI Serve — macOS Install ==="
+run_mkdir()   { if $NEEDS_SUDO; then sudo mkdir -p "$@"; else mkdir -p "$@"; fi; }
+run_cp()      { if $NEEDS_SUDO; then sudo cp "$@"; else cp "$@"; fi; }
+run_cpR()     { if $NEEDS_SUDO; then sudo cp -R "$@"; else cp -R "$@"; fi; }
+run_chown()   { if $NEEDS_SUDO; then sudo chown "$@"; else chown "$@" 2>/dev/null || true; fi; }
+run_chownR()  { if $NEEDS_SUDO; then sudo chown -R "$@"; else chown -R "$@" 2>/dev/null || true; fi; }
+run_chmod()   { if $NEEDS_SUDO; then sudo chmod "$@"; else chmod "$@"; fi; }
+run_xattr()   { if $ -NEEDS_SUDO; then sudo xattr -cr "$@" 2>/dev/null || true; else xattr -cr "$@" 2>/dev/null || true; fi; }
+run_rm_rf()   { if $NEEDS_SUDO; then sudo rm -rf "$@"; else rm -rf "$@"; fi; }
+run_sed()     { sed -i '' "$@"; }
+
 echo ""
 echo "Install base:  $INSTALL_BASE"
 echo "Config dir:    $CONFIG_DIR"
 echo "Data dir:      $DATA_DIR"
+echo "Log dir:       $APP_LOG_DIR"
 echo "Service user:  $INSTALL_USER"
+echo "Install mode:  $INSTALL_MODE"
 echo ""
 
 # ── Validate bundle directory ──
@@ -86,70 +110,67 @@ if ! command -v tmux >/dev/null 2>&1; then
 fi
 echo "    tmux $(tmux -V 2>/dev/null | sed 's/tmux //' || echo "detected") ✓"
 
-# ── Copy application files ──
-echo ">>> Installing to $INSTALL_BASE..."
-
-# Stop existing service and unload plist before removing files
+# ── Stop existing service ──
 EXISTING_PLIST="$HOME/Library/LaunchAgents/com.tui-serve.plist"
 if [ -f "$EXISTING_PLIST" ]; then
-  echo "    Stopping existing service..."
+  echo ">>> Stopping existing service..."
   launchctl unload "$EXISTING_PLIST" 2>/dev/null || true
 fi
 
-# Remove previous install to prevent stale file accumulation
+# ── Copy application files ──
+echo ">>> Installing to $INSTALL_BASE..."
+
+# Remove previous install to prevent stale files
 if [ -d "$INSTALL_BASE" ]; then
   echo "    Removing previous installation..."
-  sudo rm -rf "$INSTALL_BASE"
+  run_rm_rf "$INSTALL_BASE"
 fi
 
-sudo mkdir -p "$INSTALL_BASE"
-sudo cp -R "$BUNDLE_DIR/node" "$INSTALL_BASE/"
-sudo cp -R "$BUNDLE_DIR/server" "$INSTALL_BASE/"
-sudo cp -R "$BUNDLE_DIR/web" "$INSTALL_BASE/"
+run_mkdir "$INSTALL_BASE"
+run_cpR "$BUNDLE_DIR/node" "$INSTALL_BASE/"
+run_cpR "$BUNDLE_DIR/server" "$INSTALL_BASE/"
+run_cpR "$BUNDLE_DIR/web" "$INSTALL_BASE/"
 
-# Copy launcher wrapper
-sudo mkdir -p "$INSTALL_BASE/bin"
+# Copy launcher, doctor, and deploy scripts
+run_mkdir "$INSTALL_BASE/bin"
+run_mkdir "$INSTALL_BASE/deploy/scripts"
 if [ -f "$BUNDLE_DIR/bin/tui-serve.sh" ]; then
-  sudo cp "$BUNDLE_DIR/bin/tui-serve.sh" "$INSTALL_BASE/bin/"
-  sudo chmod 755 "$INSTALL_BASE/bin/tui-serve.sh"
-else
-  # Fallback: create launcher wrapper inline (for source builds)
-  sudo tee "$INSTALL_BASE/bin/tui-serve.sh" >/dev/null << 'LAUNCHER'
-#!/usr/bin/env bash
-set -euo pipefail
-INSTALL_BASE="/usr/local/opt/tui-serve"
-CONFIG_DIR="/usr/local/etc/tui-serve"
-set -a
-if [ -f "${CONFIG_DIR}/env" ]; then
-  . "${CONFIG_DIR}/env"
+  run_cp "$BUNDLE_DIR/bin/tui-serve.sh" "$INSTALL_BASE/bin/"
+  run_chmod 755 "$INSTALL_BASE/bin/tui-serve.sh"
 fi
-set +a
-exec "${INSTALL_BASE}/node/bin/node" \
-  "${INSTALL_BASE}/server/dist/index.js"
-LAUNCHER
-  sudo chmod 755 "$INSTALL_BASE/bin/tui-serve.sh"
-fi
-
-# Copy doctor script
-sudo mkdir -p "$INSTALL_BASE/deploy/scripts"
 if [ -f "$BUNDLE_DIR/deploy/scripts/doctor-macos.sh" ]; then
-  sudo cp "$BUNDLE_DIR/deploy/scripts/doctor-macos.sh" "$INSTALL_BASE/deploy/scripts/"
-  sudo chmod 755 "$INSTALL_BASE/deploy/scripts/doctor-macos.sh"
+  run_cp "$BUNDLE_DIR/deploy/scripts/doctor-macos.sh" "$INSTALL_BASE/deploy/scripts/"
+  run_chmod 755 "$INSTALL_BASE/deploy/scripts/doctor-macos.sh"
+fi
+if [ -f "$BUNDLE_DIR/deploy/scripts/uninstall-macos.sh" ]; then
+  run_cp "$BUNDLE_DIR/deploy/scripts/uninstall-macos.sh" "$INSTALL_BASE/deploy/scripts/"
+  run_chmod 755 "$INSTALL_BASE/deploy/scripts/uninstall-macos.sh"
 fi
 
-sudo chown -R root:wheel "$INSTALL_BASE"
+# Copy launchd plist
+run_mkdir "$INSTALL_BASE/deploy/launchd"
+if [ -f "$BUNDLE_DIR/deploy/launchd/com.tui-serve.plist" ]; then
+  run_cp "$BUNDLE_DIR/deploy/launchd/com.tui-serve.plist" "$INSTALL_BASE/deploy/launchd/"
+fi
+
+# Copy default config & env template
+run_cp "$BUNDLE_DIR/server/default-config.json" "$INSTALL_BASE/server/"
+
+if $NEEDS_SUDO; then
+  run_chownR root:wheel "$INSTALL_BASE"
+fi
 echo "    Application files installed ✓"
 
 # ── Strip quarantine attributes ──
 echo ">>> Removing macOS quarantine attributes..."
-sudo xattr -cr "$INSTALL_BASE" 2>/dev/null || true
+run_xattr "$INSTALL_BASE"
 echo "    Quarantine attributes removed ✓"
 
 # ── Configuration ──
 echo ">>> Setting up configuration..."
-sudo mkdir -p "$CONFIG_DIR"
+run_mkdir "$CONFIG_DIR"
 if [ ! -f "$CONFIG_DIR/default-config.json" ]; then
-  sudo cp "$BUNDLE_DIR/server/default-config.json" "$CONFIG_DIR/"
+  run_cp "$BUNDLE_DIR/server/default-config.json" "$CONFIG_DIR/"
 fi
 
 if is_interactive; then
@@ -190,34 +211,85 @@ TUI_SERVE_CONFIG=$CONFIG_DIR/default-config.json
 TUI_SERVE_DATA_DIR=$DATA_DIR
 TUI_SERVE_WEB_DIR=$INSTALL_BASE/web
 EOF
-  sudo cp "$ENV_TMP" "$CONFIG_DIR/env"
-  sudo chown "$INSTALL_USER" "$CONFIG_DIR/env"
-  sudo chmod 600 "$CONFIG_DIR/env"
+  if $NEEDS_SUDO; then
+    sudo cp "$ENV_TMP" "$CONFIG_DIR/env"
+    sudo chown "$INSTALL_USER" "$CONFIG_DIR/env"
+    sudo chmod 600 "$CONFIG_DIR/env"
+  else
+    cp "$ENV_TMP" "$CONFIG_DIR/env"
+    chown "$INSTALL_USER" "$CONFIG_DIR/env" 2>/dev/null || true
+    chmod 600 "$CONFIG_DIR/env"
+  fi
   rm -f "$ENV_TMP"
 else
   if ! grep -q '^BIND_HOST=' "$CONFIG_DIR/env"; then
-    echo "BIND_HOST=$BIND_HOST" | sudo tee -a "$CONFIG_DIR/env" >/dev/null
+    if $NEEDS_SUDO; then
+      echo "BIND_HOST=$BIND_HOST" | sudo tee -a "$CONFIG_DIR/env" >/dev/null
+    else
+      echo "BIND_HOST=$BIND_HOST" >> "$CONFIG_DIR/env"
+    fi
   fi
 fi
 echo "    Configuration ready ✓"
 
 # ── Data and log directories ──
 echo ">>> Setting up data directory..."
-sudo mkdir -p "$DATA_DIR"
-sudo mkdir -p "$APP_LOG_DIR"
-sudo chown -R "$INSTALL_USER" "$DATA_DIR"
-sudo chown -R "$INSTALL_USER" "$APP_LOG_DIR"
+run_mkdir "$DATA_DIR"
+run_mkdir "$LOG_DIR"
+run_mkdir "$APP_LOG_DIR"
+if $NEEDS_SUDO; then
+  sudo chown -R "$INSTALL_USER" "$DATA_DIR"
+  sudo chown -R "$INSTALL_USER" "$APP_LOG_DIR"
+fi
 echo "    Data directory ready ✓"
+
+# ── Write mode-aware launcher wrapper ──
+echo ">>> Writing launcher wrapper..."
+mkdir -p "$INSTALL_BASE/bin"
+cat > "$INSTALL_BASE/bin/tui-serve.sh" << LAUNCHER
+#!/usr/bin/env bash
+set -euo pipefail
+INSTALL_BASE="$INSTALL_BASE"
+CONFIG_DIR="$CONFIG_DIR"
+NODE_BIN="\${INSTALL_BASE}/node/bin/node"
+SERVER_ENTRY="\${INSTALL_BASE}/server/dist/index.js"
+
+# ── Preflight checks ──
+if [ ! -x "\$NODE_BIN" ]; then
+  echo "[tui-serve] ERROR: Node.js binary not found or not executable: \$NODE_BIN" >&2
+  echo "[tui-serve] Re-install or run: \$INSTALL_BASE/deploy/scripts/doctor-macos.sh" >&2
+  exit 1
+fi
+
+if [ ! -f "\$SERVER_ENTRY" ]; then
+  echo "[tui-serve] ERROR: Server entry point not found: \$SERVER_ENTRY" >&2
+  echo "[tui-serve] Re-install the application." >&2
+  exit 1
+fi
+
+# ── Source environment config (AUTH_TOKEN, PORT, BIND_HOST, etc.) ──
+set -a
+if [ -f "\${CONFIG_DIR}/env" ]; then
+  . "\${CONFIG_DIR}/env"
+fi
+set +a
+
+exec "\${NODE_BIN}" "\${SERVER_ENTRY}"
+LAUNCHER
+chmod 755 "$INSTALL_BASE/bin/tui-serve.sh"
+echo "    Launcher wrapper written ✓"
 
 # ── launchd service ──
 echo ">>> Installing launchd service..."
 PLIST_SRC="$BUNDLE_DIR/deploy/launchd/com.tui-serve.plist"
 PLIST_DST="$HOME/Library/LaunchAgents/com.tui-serve.plist"
 
-# If a system-wide plist exists, remove it first
+# If a system-wide plist exists, remove it
 if [ -f "/Library/LaunchDaemons/com.tui-serve.plist" ]; then
-  sudo launchctl bootout system/com.tui-serve 2>/dev/null || true
-  sudo rm /Library/LaunchDaemons/com.tui-serve.plist
+  if $NEEDS_SUDO; then
+    sudo launchctl bootout system/com.tui-serve 2>/dev/null || true
+    sudo rm /Library/LaunchDaemons/com.tui-serve.plist
+  fi
 fi
 
 mkdir -p "$HOME/Library/LaunchAgents"
@@ -232,17 +304,14 @@ if [ -f "$PLIST_SRC" ]; then
       exit 1
     fi
   fi
+
+  # Update paths in plist for this install location
+  sed -i '' "s|/usr/local/opt/tui-serve/server|${INSTALL_BASE}/server|g" "$PLIST_DST" 2>/dev/null || true
+  sed -i '' "s|/usr/local/opt/tui-serve/bin/tui-serve.sh|${INSTALL_BASE}/bin/tui-serve.sh|g" "$PLIST_DST" 2>/dev/null || true
+  sed -i '' "s|/usr/local/var/log/tui-serve|${APP_LOG_DIR}|g" "$PLIST_DST" 2>/dev/null || true
 else
   echo "    Warning: launchd plist template not found at $PLIST_SRC"
-  echo "    You'll need to create it manually."
   PLIST_DST=""
-fi
-
-# Update paths in plist for this user's install
-if [ -n "$PLIST_DST" ] && [ -f "$PLIST_DST" ]; then
-  sed -i '' "s|/usr/local/opt/tui-serve/server|$INSTALL_BASE/server|g" "$PLIST_DST" 2>/dev/null || true
-  sed -i '' "s|/usr/local/opt/tui-serve/bin/tui-serve.sh|$INSTALL_BASE/bin/tui-serve.sh|g" "$PLIST_DST" 2>/dev/null || true
-  sed -i '' "s|/usr/local/var/log/tui-serve|$APP_LOG_DIR|g" "$PLIST_DST" 2>/dev/null || true
 fi
 
 echo "    launchd plist installed ✓"
@@ -255,18 +324,27 @@ if [ -n "$PLIST_DST" ] && [ -f "$PLIST_DST" ]; then
   echo "    Service started ✓"
 fi
 
+# ── Write install mode marker ──
+echo "$INSTALL_MODE" > "$INSTALL_BASE/.install-mode"
+
 echo ""
 echo "╔══════════════════════════════════════════════════════════╗"
 echo "║            Install Complete!                             ║"
 echo "╠══════════════════════════════════════════════════════════╣"
 echo "║                                                          ║"
-echo "║  Open:  http://localhost:${PORT}                           ║"
+echo "║  Mode:    $INSTALL_MODE"
+echo "║  Open:    http://localhost:${PORT}"
 echo "║                                                          ║"
-echo "║  Network mode requires auth by default.                  ║"
+if [ "$INSTALL_MODE" = "user" ]; then
+echo "║  ⓘ  User mode: no sudo was used.                         ║"
+echo "║     Files are in your home directory.                     ║"
+fi
+echo "║                                                          ║"
+echo "║  Network mode requires auth by default.                   ║"
 echo "║  To edit auth/bind settings:                             ║"
 echo "║    nano $CONFIG_DIR/env"
 if [ -n "$GENERATED_AUTH_TOKEN" ]; then
-  echo "║    Generated token was written to env file.              ║"
+echo "║    Generated token was written to env file.                ║"
 fi
 echo "║    launchctl kickstart -k gui/$(id -u)/com.tui-serve"
 echo "║                                                          ║"
@@ -275,6 +353,6 @@ echo "║  Logs:    $APP_LOG_DIR/"
 echo "║                                                          ║"
 echo "║  Stop:    launchctl unload $PLIST_DST"
 echo "║  Restart: launchctl kickstart -k gui/$(id -u)/com.tui-serve"
-echo "║  Uninstall: ./deploy/scripts/uninstall-macos.sh           ║"
-echo "║  Doctor:   $INSTALL_BASE/deploy/scripts/doctor-macos.sh   ║"
+echo "║  Uninstall: $INSTALL_BASE/deploy/scripts/uninstall-macos.sh"
+echo "║  Doctor:   $INSTALL_BASE/deploy/scripts/doctor-macos.sh"
 echo "╚══════════════════════════════════════════════════════════╝"

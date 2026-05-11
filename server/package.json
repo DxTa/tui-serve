@@ -3,7 +3,7 @@
   "version": "0.1.3",
   "type": "module",
   "scripts": {
-    "dev": "PORT=3100 tsx watch src/index.ts",
+    "dev": "PORT=3100 BIND_HOST=127.0.0.1 tsx watch src/index.ts",
     "build": "rm -rf dist && tsc",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "pretest": "npm run build --prefix ../packages/shared",

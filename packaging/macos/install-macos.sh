@@ -254,6 +254,14 @@ CONFIG_DIR="$CONFIG_DIR"
 NODE_BIN="\${INSTALL_BASE}/node/bin/node"
 SERVER_ENTRY="\${INSTALL_BASE}/server/dist/index.js"
 
+# ── Ensure Homebrew and system paths are in PATH ──
+# macOS Apple Silicon uses /opt/homebrew, Intel uses /usr/local
+for _bp in /opt/homebrew/bin /usr/local/bin; do
+  if [ -d "\${_bp}" ] && echo ":\${PATH}:" | grep -qv ":\${_bp}:"; then
+    export PATH="\${_bp}:\${PATH}"
+  fi
+done
+
 # ── Preflight checks ──
 if [ ! -x "\$NODE_BIN" ]; then
   echo "[tui-serve] ERROR: Node.js binary not found or not executable: \$NODE_BIN" >&2

@@ -95,40 +95,43 @@ tar -xzf "$NODE_TARBALL_PATH" -C "$NODE_EXTRACT" \
 NODE_BIN_SIZE=$(du -sh "${NODE_EXTRACT}/bin/node" | cut -f1)
 echo "    Node.js binary: ${NODE_BIN_SIZE} ✓"
 
-# ── Stage 0.5: Build shared package ──
+# ── Stage 1: Install all workspace dependencies ──
+# This project uses npm workspaces (root package.json defines workspaces for
+# packages/shared, server, and tui-web). Dependencies are hoisted to the root
+# node_modules/ by npm, so install and prune from the project root.
+echo ">>> Installing workspace dependencies..."
+cd "${PROJECT_DIR}"
+npm ci 2>/dev/null || npm install
+echo "    Workspace dependencies installed ✓"
+
+# ── Stage 1.5: Build shared package ──
 echo ">>> Building shared package..."
 cd "${PROJECT_DIR}/packages/shared"
-npm ci --ignore-scripts 2>/dev/null || npm ci
 npm run build
 echo "    Shared package built ✓"
 
-# ── Stage 1: Build frontend ──
+# ── Stage 2: Build frontend ──
 echo ">>> Building frontend..."
 cd "${PROJECT_DIR}/tui-web"
-npm ci --ignore-scripts 2>/dev/null || npm ci
 npm run build
+cd "${PROJECT_DIR}"
+npm run validate:web-dist
 echo "    Frontend built ✓"
 
-# ── Stage 2: Build backend ──
+# ── Stage 3: Build backend ──
 echo ">>> Building backend..."
 cd "${PROJECT_DIR}/server"
 
 # Clean stale artifacts (e.g., old better-sqlite3 db.* from removed dependency)
 rm -f dist/db.js dist/db.d.ts dist/db.js.map
 
-npm ci 2>/dev/null || npm install
 npm run build
 echo "    Backend built ✓"
 
-# ── Stage 3: Prune devDependencies ──
+# ── Stage 4: Prune devDependencies ──
 echo ">>> Pruning devDependencies..."
-cd "${PROJECT_DIR}/server"
+cd "${PROJECT_DIR}"
 npm prune --omit=dev 2>/dev/null || true
-# Ensure @fastify/static is present (runtime dep)
-if ! node -e "require.resolve('@fastify/static')" 2>/dev/null; then
-  echo "    Installing @fastify/static (runtime dep)..."
-  npm install @fastify/static 2>/dev/null
-fi
 echo "    Production node_modules ready ✓"
 
 # ── Stage 4: Assemble bundle ──
@@ -145,7 +148,23 @@ mkdir -p "${BUNDLE_DIR}/server/node_modules"
 cp -R "${PROJECT_DIR}/server/dist/"* "${BUNDLE_DIR}/server/dist/"
 cp "${PROJECT_DIR}/server/package.json" "${BUNDLE_DIR}/server/"
 cp "${PROJECT_DIR}/server/package-lock.json" "${BUNDLE_DIR}/server/"
-cp -aL "${PROJECT_DIR}/server/node_modules/." "${BUNDLE_DIR}/server/node_modules/" 2>/dev/null || cp -a "${PROJECT_DIR}/server/node_modules/." "${BUNDLE_DIR}/server/node_modules/"
+# Copy root node_modules first (contains hoisted production deps like fastify,
+# ws, zod, node-pty) then overlay server/node_modules if present.
+cp -a "${PROJECT_DIR}/node_modules/." "${BUNDLE_DIR}/server/node_modules/"
+if [ -d "${PROJECT_DIR}/server/node_modules" ]; then
+  cp -a "${PROJECT_DIR}/server/node_modules/." "${BUNDLE_DIR}/server/node_modules/"
+fi
+
+# Resolve workspace symlinks that would be broken inside the bundle.
+BUNDLE_NM="${BUNDLE_DIR}/server/node_modules"
+if [ -L "${BUNDLE_NM}/@tui-serve/shared" ]; then
+  SHARED_TARGET="$(readlink -f "${PROJECT_DIR}/node_modules/@tui-serve/shared")"
+  rm "${BUNDLE_NM}/@tui-serve/shared"
+  cp -a "${SHARED_TARGET}" "${BUNDLE_NM}/@tui-serve/shared"
+fi
+
+# Remove root workspace self-link (not needed at runtime)
+rm -f "${BUNDLE_NM}/tui-serve-server"
 cp "${PROJECT_DIR}/server/default-config.json" "${BUNDLE_DIR}/server/"
 
 # -- Frontend --
@@ -190,7 +209,7 @@ fi
 
 if [ -d "${SERVER_DIR}/node_modules/node_modules" ]; then
   echo "❌ Invalid nested node_modules layout: ${SERVER_DIR}/node_modules/node_modules" >&2
-  echo "   Copy node_modules contents with: cp -a server/node_modules/. DEST/" >&2
+  echo "   This indicates a broken overlap of root + server node_modules." >&2
   exit 1
 fi
 
@@ -199,14 +218,12 @@ fi
   "${BUNDLE_DIR}/node/bin/node" -e "import('fastify').then(() => console.log('fastify import ok'))"
 ) >/dev/null
 
-# Check shared package resolved (not a broken symlink)
+# Verify broken workspace symlinks were fully resolved
 if [ -L "${BUNDLE_DIR}/server/node_modules/@tui-serve/shared" ]; then
-  SHARED_TARGET="$(readlink "${BUNDLE_DIR}/server/node_modules/@tui-serve/shared")"
-  if [ ! -e "${BUNDLE_DIR}/server/node_modules/@tui-serve/shared/dist/index.js" ]; then
-    echo "❌ Shared package symlink target is broken: ${SHARED_TARGET}" >&2
-    echo "   The bundle must contain resolved (not symlinked) shared package." >&2
-    exit 1
-  fi
+  SHARED_LINK_TARGET="$(readlink "${BUNDLE_DIR}/server/node_modules/@tui-serve/shared")"
+  echo "❌ Broken workspace symlink still present: @tui-serve/shared -> ${SHARED_LINK_TARGET}" >&2
+  echo "   This symlink points outside node_modules and will not resolve at runtime." >&2
+  exit 1
 fi
 
 # Check for stale better-sqlite3 artifacts

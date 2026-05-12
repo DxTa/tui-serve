@@ -5,7 +5,7 @@ import { TmuxSessionStore, type Session, type CreateSessionInput } from './Sessi
 import * as tmux from './tmux.js';
 import * as allowlist from './allowlist.js';
 import { killAllBridgesForSession } from './ptyBridge.js';
-import { extractSessionId, getResumeCommand, supportsResume, type AgentType } from './agentSessionId.js';
+import { extractSessionId, extractSessionIdAfter, getResumeCommand, supportsResume, type AgentType } from './agentSessionId.js';
 import { logEvent } from './eventLog.js';
 import { PROTOCOL_VERSION, ErrorCode, type SessionStatus } from './protocol.js';
 
@@ -40,6 +40,30 @@ let healthCheckTimer: ReturnType<typeof setInterval> | null = null;
 
 export function getStore(): TmuxSessionStore {
   return store;
+}
+
+export function scheduleAgentSessionRefresh(sessionId: string, reason = 'manual'): void {
+  const session = store.getSession(sessionId);
+  if (!session || session.agentType !== 'pi') return;
+
+  const requestedAtMs = Date.now();
+  const previousAgentSessionId = session.agentSessionId || undefined;
+  const delays = [1500, 4000, 9000];
+
+  for (const delay of delays) {
+    setTimeout(() => {
+      const current = store.getSession(sessionId);
+      if (!current || current.agentType !== 'pi') return;
+      if (previousAgentSessionId && current.agentSessionId && current.agentSessionId !== previousAgentSessionId) return;
+
+      const nextAgentSessionId = extractSessionIdAfter(current.agentType, current.cwd, requestedAtMs, previousAgentSessionId);
+      if (!nextAgentSessionId) return;
+
+      store.setAgentSessionId(sessionId, nextAgentSessionId);
+      logger.info('session.agentId.refreshed', { sessionId, reason, previousAgentSessionId, nextAgentSessionId, delay });
+      logEvent(sessionId, 'agent_id_extracted', { agentSessionId: nextAgentSessionId, source: reason, previousAgentSessionId });
+    }, delay);
+  }
 }
 
 export function startHealthCheck(intervalMs = 30000): void {

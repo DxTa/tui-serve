@@ -56,6 +56,7 @@ interface ClientState {
   outputBuffer: Buffer[];
   outputBufferBytes: number;
   outputFlushTimer: ReturnType<typeof setTimeout> | null;
+  inputLineBuffer: string;
 }
 
 const sessionConnections = new Map<string, Set<ClientState>>();
@@ -90,6 +91,7 @@ export function setupWebSocket(server: FastifyInstance): WebSocketServer {
       outputBuffer: [],
       outputBufferBytes: 0,
       outputFlushTimer: null,
+      inputLineBuffer: '',
     };
     clients.set(ws, client);
 
@@ -365,6 +367,23 @@ function handleInput(client: ClientState, sessionId: string, data: string): void
     return;
   }
   if (client.pty && client.sessionId === sessionId) {
+    const previousLine = client.inputLineBuffer;
+    for (const ch of data) {
+      if (ch === '\r' || ch === '\n') {
+        if (client.inputLineBuffer.trim() === '/new') {
+          sessionManager.scheduleAgentSessionRefresh(sessionId, 'pi_new_command');
+        }
+        client.inputLineBuffer = '';
+      } else if (ch === '\u007f' || ch === '\b') {
+        client.inputLineBuffer = client.inputLineBuffer.slice(0, -1);
+      } else if (ch >= ' ' && ch !== '\u001b') {
+        client.inputLineBuffer += ch;
+        if (client.inputLineBuffer.length > 200) client.inputLineBuffer = client.inputLineBuffer.slice(-200);
+      } else if (ch === '\u001b') {
+        client.inputLineBuffer = previousLine;
+        break;
+      }
+    }
     client.pty.write(data);
   }
 }

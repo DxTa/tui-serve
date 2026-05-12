@@ -4,7 +4,7 @@
 // so we can resume after a crash.
 
 import { execSync } from 'child_process';
-import { existsSync, readdirSync, readFileSync } from 'fs';
+import { existsSync, readdirSync, readFileSync, statSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
 
@@ -30,45 +30,42 @@ function encodeCwdClaude(cwd: string): string {
 
 // ── Per-agent extraction ──
 
+function parsePiTimestampFromFilename(name: string): number | null {
+  const tsMatch = name.match(/^(\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z)_/);
+  if (!tsMatch) return null;
+  const isoTs = tsMatch[1]
+    .replace(/T(\d{2})-(\d{2})-(\d{2})-(\d{3})Z$/, 'T$1:$2:$3.$4Z');
+  const fileTimeMs = new Date(isoTs).getTime();
+  return isNaN(fileTimeMs) ? null : fileTimeMs;
+}
+
+function readPiSessionCandidates(cwd: string): Array<{ id: string; fileTimeMs: number; mtimeMs: number; fileName: string }> {
+  const encoded = encodeCwdPi(cwd);
+  const sessionsDir = join(HOME, '.pi', 'agent', 'sessions', encoded);
+  if (!existsSync(sessionsDir)) return [];
+
+  const entries = readdirSync(sessionsDir, { withFileTypes: true })
+    .filter(d => d.isFile() && d.name.endsWith('.jsonl'))
+    .sort((a, b) => b.name.localeCompare(a.name));
+
+  const candidates: Array<{ id: string; fileTimeMs: number; mtimeMs: number; fileName: string }> = [];
+  for (const entry of entries) {
+    const file = join(sessionsDir, entry.name);
+    try {
+      const firstLine = readFileSync(file, 'utf-8').split('\n')[0];
+      const header = JSON.parse(firstLine);
+      if (!header.id || (header.cwd && header.cwd !== cwd)) continue;
+      const fileTimeMs = parsePiTimestampFromFilename(entry.name);
+      if (fileTimeMs === null) continue;
+      candidates.push({ id: header.id, fileTimeMs, mtimeMs: statSync(file).mtimeMs, fileName: entry.name });
+    } catch { continue; }
+  }
+  return candidates;
+}
+
 function extractPiSessionId(cwd: string, createdAt?: string): string | null {
   try {
-    const encoded = encodeCwdPi(cwd);
-    const sessionsDir = join(HOME, '.pi', 'agent', 'sessions', encoded);
-    if (!existsSync(sessionsDir)) return null;
-
-    // Pi's primary sessions are top-level <timestamp>_<uuid>.jsonl files.
-    // Nested session.jsonl files are subagent/chain runs; using them resumes the wrong Pi session.
-    const entries = readdirSync(sessionsDir, { withFileTypes: true })
-      .filter(d => d.isFile() && d.name.endsWith('.jsonl'))
-      .sort((a, b) => b.name.localeCompare(a.name)); // filenames start with sortable timestamp
-
-    // Parse all matching .jsonl files into candidates with timestamps.
-    // Pi filenames use the format: YYYY-MM-DDTHH-MM-SS-mmmZ_<uuid>.jsonl
-    // where dashes replace colons in the ISO timestamp for filesystem safety.
-    type Candidate = { id: string; fileTimeMs: number; fileName: string };
-    const candidates: Candidate[] = [];
-
-    for (const entry of entries) {
-      const file = join(sessionsDir, entry.name);
-      try {
-        const firstLine = readFileSync(file, 'utf-8').split('\n')[0];
-        const header = JSON.parse(firstLine);
-        if (!header.id || (header.cwd && header.cwd !== cwd)) continue;
-
-        // Extract timestamp from filename: YYYY-MM-DDTHH-MM-SS-mmmZ
-        // Convert filesystem-safe dashes back to ISO colons for parsing.
-        // Format: 2026-05-11T19-03-40-425Z -> 2026-05-11T19:03:40.425Z
-        const tsMatch = entry.name.match(/^(\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z)_/);
-        if (tsMatch) {
-          const isoTs = tsMatch[1]
-            .replace(/T(\d{2})-(\d{2})-(\d{2})-(\d{3})Z$/, 'T$1:$2:$3.$4Z');
-          const fileTimeMs = new Date(isoTs).getTime();
-          if (!isNaN(fileTimeMs)) {
-            candidates.push({ id: header.id, fileTimeMs, fileName: entry.name });
-          }
-        }
-      } catch { continue; }
-    }
+    const candidates = readPiSessionCandidates(cwd);
 
     // Strategy 1: If createdAt is provided, find the .jsonl file whose timestamp
     // is closest to the tmux session creation time. This works because when Pi
@@ -108,6 +105,19 @@ function extractPiSessionId(cwd: string, createdAt?: string): string | null {
       return candidate.id;
     }
     return null;
+  } catch {
+    return null;
+  }
+}
+
+function extractPiSessionIdAfter(cwd: string, afterMs: number, excludeId?: string): string | null {
+  try {
+    const candidates = readPiSessionCandidates(cwd)
+      .filter(c => c.id !== excludeId)
+      .filter(c => c.fileTimeMs >= afterMs - 1000 || c.mtimeMs >= afterMs - 1000)
+      .sort((a, b) => Math.max(b.fileTimeMs, b.mtimeMs) - Math.max(a.fileTimeMs, a.mtimeMs));
+
+    return candidates[0]?.id || null;
   } catch {
     return null;
   }
@@ -194,6 +204,12 @@ export function extractSessionId(agentType: string, cwd: string, createdAt?: str
   const extractor = EXTRACTORS[agentType as AgentType];
   if (!extractor) return null;
   return extractor(cwd, createdAt);
+}
+
+/** Extract a newly-created agent session ID after an in-agent session switch (e.g. Pi `/new`). */
+export function extractSessionIdAfter(agentType: string, cwd: string, afterMs: number, excludeId?: string): string | null {
+  if (agentType === 'pi') return extractPiSessionIdAfter(cwd, afterMs, excludeId);
+  return null;
 }
 
 // ── Resume commands ──

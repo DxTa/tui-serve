@@ -65,12 +65,16 @@ export async function syncFromServer(serverSessions: any[]): Promise<void> {
   }
 
   // Remove tombstones that are superseded by live server sessions.
-  // This prevents duplicate cards after: kill/reconnect/start again.
+  // Prefer agentSessionId as identity. Title/cwd is only a fallback when the
+  // tombstone has no agentSessionId; otherwise two distinct Pi conversations
+  // with the same title/cwd can collapse and reconnect the wrong session.
   const liveSessions = await db.sessions.filter(s => !s.isTombstone).toArray();
   let tombstones = await db.sessions.filter(s => s.isTombstone).toArray();
   for (const tombstone of tombstones) {
     const superseded = liveSessions.some(live => {
-      if (tombstone.agentSessionId && live.agentSessionId && tombstone.agentSessionId === live.agentSessionId) return true;
+      if (tombstone.agentSessionId) {
+        return Boolean(live.agentSessionId && tombstone.agentSessionId === live.agentSessionId);
+      }
       return live.commandId === tombstone.commandId
         && live.cwd === tombstone.cwd
         && live.title === tombstone.title;

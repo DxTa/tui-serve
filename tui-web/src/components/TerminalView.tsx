@@ -531,13 +531,29 @@ export default function TerminalView({ session, host, onBack, onSessionUpdate }:
 
   const blurTerminalIfKeyboardClosed = () => {
     // Android Chrome can reopen the soft keyboard when a touch/click happens
-    // while xterm's hidden textarea remains focused. If keyboard is already
-    // closed, blur that textarea before handling toolbar controls.
+    // while a focusable input remains focused. If keyboard is already closed,
+    // blur any such input and suppress its ability to reopen the keyboard.
     if (isSoftKeyboardOpen()) return;
     const active = document.activeElement;
-    if (active instanceof HTMLElement && active.classList.contains('xterm-helper-textarea')) {
+    if (active instanceof HTMLElement && (
+      active.classList.contains('xterm-helper-textarea') ||
+      active.tagName === 'INPUT' ||
+      active.tagName === 'TEXTAREA'
+    )) {
       active.blur();
-      if (isTouchDevice()) active.setAttribute('inputmode', 'none');
+      if (active.classList.contains('xterm-helper-textarea') && isTouchDevice()) {
+        active.setAttribute('inputmode', 'none');
+      }
+      if (active.tagName === 'INPUT') {
+        (active as HTMLInputElement).inputMode = 'none';
+      }
+    }
+    // Also suppress the mobile bridge input even if it's not currently focused —
+    // it retains inputMode="text" and tabIndex={0} after keyboard dismiss, which
+    // can cause accidental keyboard reopening on bottom-bar button presses.
+    const bridge = mobileInputBridgeRef.current;
+    if (bridge) {
+      bridge.inputMode = 'none';
     }
   };
 
@@ -563,11 +579,20 @@ export default function TerminalView({ session, host, onBack, onSessionUpdate }:
     const bridge = mobileInputBridgeRef.current;
     if (!bridge) return;
 
-    if (document.activeElement === bridge && isSoftKeyboardOpen()) {
-      bridge.blur();
+    if (isSoftKeyboardOpen()) {
+      // Keyboard is open — dismiss it.  Don't rely on activeElement because
+      // Android Chrome can blur the focused input between pointerDown and
+      // pointerUp, making document.activeElement unreliable for toggle logic.
+      const active = document.activeElement;
+      if (active instanceof HTMLElement) active.blur();
+      suppressMobileTerminalInput(termRef.current);
+      // Prevent bridge from accidentally reopening the keyboard
+      bridge.inputMode = 'none';
     } else {
+      // Keyboard is closed — open it via the bridge input
       suppressMobileTerminalInput(termRef.current);
       bridge.value = '';
+      bridge.inputMode = 'text';
       bridge.focus();
     }
   };
@@ -737,6 +762,10 @@ export default function TerminalView({ session, host, onBack, onSessionUpdate }:
     proxyPointerStartYRef.current = null;
     if (movement > 8) return;
 
+    // Suppress bridge input when opening keyboard directly via xterm textarea tap,
+    // so the bridge doesn't compete for focus or accidentally reopen the keyboard.
+    const bridge = mobileInputBridgeRef.current;
+    if (bridge) bridge.inputMode = 'none';
     allowMobileTerminalInput(termRef.current);
     terminalRef.current?.focus();
   };
@@ -979,9 +1008,21 @@ function MobileKeyBar({
 
   const preventMobileButtonFocus = (event: React.PointerEvent<HTMLButtonElement>) => {
     const active = document.activeElement;
-    if (active instanceof HTMLElement && active.classList.contains('xterm-helper-textarea')) {
+    if (active instanceof HTMLElement && (
+      active.classList.contains('xterm-helper-textarea') ||
+      active.tagName === 'INPUT' ||
+      active.tagName === 'TEXTAREA'
+    )) {
       const viewport = window.visualViewport;
-      if (!viewport || window.innerHeight - viewport.height <= 120) active.blur();
+      if (!viewport || window.innerHeight - viewport.height <= 120) {
+        active.blur();
+        if (active.classList.contains('xterm-helper-textarea')) {
+          active.setAttribute('inputmode', 'none');
+        }
+        if (active.tagName === 'INPUT') {
+          (active as HTMLInputElement).inputMode = 'none';
+        }
+      }
     }
     event.preventDefault();
   };

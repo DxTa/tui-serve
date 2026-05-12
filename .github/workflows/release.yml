@@ -66,7 +66,7 @@ jobs:
           NODE_VERSION: '22.15.0'
 
       - name: Upload .deb artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: tui-serve-${{ steps.version.outputs.VERSION }}-amd64-deb
           path: packaging/dist/*.deb
@@ -112,7 +112,7 @@ jobs:
   #         cat checksums-macos-arm64.txt
   #
   #     - name: Upload macOS artifact
-  #       uses: actions/upload-artifact@v4
+  #       uses: actions/upload-artifact@v7
   #       with:
   #         name: tui-serve-${{ steps.version.outputs.VERSION }}-macos-arm64
   #         path: |

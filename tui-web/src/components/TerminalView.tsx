@@ -485,10 +485,20 @@ export default function TerminalView({ session, host, onBack, onSessionUpdate }:
   // Belt-and-suspenders: window-level keydown capture to preventDefault browser
   // shortcuts when terminal is focused. xterm's attachCustomKeyEventHandler
   // handles the primary interception (above), this is defense-in-depth.
+  //
+  // On desktop, ESC and TAB must reach xterm's hidden textarea so they
+  // generate \x1b and \t via onData. Without preventDefault:
+  //   - TAB moves focus to the next focusable element (browser default)
+  //   - ESC can trigger browser back-navigation or exit fullscreen
+  // On mobile these keys work via MobileKeyBar buttons that call sendKey()
+  // directly, so this handler only matters for desktop/physical keyboards.
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       const textarea = document.querySelector('.xterm-helper-textarea');
       if (!textarea || document.activeElement !== textarea) return;
+      if (e.key === 'Escape' || e.key === 'Tab') {
+        e.preventDefault();
+      }
       if (e.ctrlKey && !e.altKey && !e.metaKey && !e.shiftKey) {
         switch (e.key) {
           case 'w':

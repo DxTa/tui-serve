@@ -111,4 +111,8 @@ export const api = {
   listCommands(): Promise<CommandInfo[]> {
     return request('/api/commands');
   },
+
+  listDirectory(path: string): Promise<{ directories: string[] }> {
+    return request(`/api/fs/ls?path=${encodeURIComponent(path)}`);
+  },
 };

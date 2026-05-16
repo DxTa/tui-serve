@@ -1,8 +1,8 @@
 // Main entry point — Fastify server + WebSocket + REST API
 
 import Fastify from 'fastify';
-import { existsSync, mkdirSync, readFileSync } from 'fs';
-import { resolve, dirname } from 'path';
+import { existsSync, mkdirSync, readFileSync, readdirSync, statSync } from 'fs';
+import { resolve as pathResolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { execSync } from 'child_process';
 import { config } from './config.js';
@@ -181,9 +181,66 @@ server.get('/api/commands', async () => {
   return getCommandLabels();
 });
 
+// List subdirectories of a given path (for working directory autocomplete)
+server.get('/api/fs/ls', async (req, reply) => {
+  const { path: dirPath } = req.query as { path?: string };
+  if (!dirPath || typeof dirPath !== 'string') {
+    reply.code(400).send({ error: 'INVALID_INPUT', message: 'Missing or invalid path parameter' });
+    return;
+  }
+
+  // Resolve the path to remove . and .. segments
+  const resolvedPath = pathResolve(dirPath);
+
+  // Security: verify the path falls within at least one command's allowedCwdRoots
+  const allAllowedRoots = config.commands.flatMap((c) => c.allowedCwdRoots);
+  const isAllowed = allAllowedRoots.some((root) => {
+    const resolvedRoot = pathResolve(root);
+    return resolvedPath === resolvedRoot || resolvedPath.startsWith(resolvedRoot + '/');
+  });
+
+  if (!isAllowed) {
+    reply.code(403).send({ error: 'FORBIDDEN', message: 'Path is outside allowed directory roots' });
+    return;
+  }
+
+  // Check the path exists and is a directory
+  if (!existsSync(resolvedPath)) {
+    reply.code(404).send({ error: 'NOT_FOUND', message: 'Directory not found' });
+    return;
+  }
+
+  try {
+    const stat = statSync(resolvedPath);
+    if (!stat.isDirectory()) {
+      reply.code(400).send({ error: 'NOT_DIRECTORY', message: 'Path is not a directory' });
+      return;
+    }
+  } catch {
+    reply.code(404).send({ error: 'NOT_FOUND', message: 'Directory not found' });
+    return;
+  }
+
+  try {
+    const entries = readdirSync(resolvedPath, { withFileTypes: true });
+    const directories = entries
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => entry.name)
+      .sort((a, b) => a.localeCompare(b));
+    return { directories };
+  } catch (err: any) {
+    if (err.code === 'EACCES' || err.code === 'EPERM') {
+      reply.code(403).send({ error: 'PERMISSION_DENIED', message: 'Cannot read directory' });
+      return;
+    }
+    reply.code(500).send({ error: 'READ_ERROR', message: 'Failed to read directory' });
+    return;
+  }
+});
+
 // ── Serve static files (production) ──
 // TUI_SERVE_WEB_DIR overrides the web assets directory (for packaged installs)
-const webDistPath = process.env.TUI_SERVE_WEB_DIR || resolve(__dirname, '..', '..', 'web', 'dist');
+const webDistPath = process.env.TUI_SERVE_WEB_DIR || pathResolve(__dirname, '..', '..', 'web', 'dist');
 if (existsSync(webDistPath)) {
   logger.info('Serving static files from', { path: webDistPath });
   try {
@@ -227,7 +284,7 @@ if (existsSync(webDistPath)) {
         !request.url.startsWith('/ws') &&
         !/\.[a-z0-9]+(?:[?#].*)?$/i.test(request.url)
       ) {
-        reply.type('text/html; charset=utf-8').send(readFileSync(resolve(webDistPath, 'index.html'), 'utf-8'));
+        reply.type('text/html; charset=utf-8').send(readFileSync(pathResolve(webDistPath, 'index.html'), 'utf-8'));
         return;
       }
 

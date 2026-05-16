@@ -598,15 +598,88 @@ function CreateSessionModal({ commands, recentCwds, onCreate, onClose, onCreated
   const [error, setError] = useState('');
   const [creating, setCreating] = useState(false);
   const [cwdMenuOpen, setCwdMenuOpen] = useState(false);
+  const [dirSuggestions, setDirSuggestions] = useState<string[]>([]);
+  const [selectedIndex, setSelectedIndex] = useState(-1);
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   const cwdOptions = useMemo(() => (
     Array.from(new Set(recentCwds.filter(Boolean)))
   ), [recentCwds]);
-  const visibleCwdOptions = useMemo(() => {
+
+  // Whether to show live directory suggestions (when path has a /)
+  const hasSlash = cwd.includes('/');
+
+  // Filtered recent cwd options — always filter by input text
+  const filteredRecentCwds = useMemo(() => {
     const query = cwd.trim().toLowerCase();
     if (!query) return cwdOptions;
     return cwdOptions.filter((option) => option.toLowerCase().includes(query));
   }, [cwd, cwdOptions]);
 
+  // Compute the "parent path" and "partial" for filesystem browsing
+  const parentPath = hasSlash ? (cwd.substring(0, cwd.lastIndexOf('/')) || '/') : '';
+  const partial = hasSlash ? cwd.substring(cwd.lastIndexOf('/') + 1).toLowerCase() : '';
+
+  // Fetch directory suggestions when cwd changes (debounced)
+  useEffect(() => {
+    if (!hasSlash) {
+      setDirSuggestions([]);
+      return;
+    }
+
+    // Clear any pending debounce
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+
+    debounceRef.current = setTimeout(async () => {
+      if (!parentPath) {
+        setDirSuggestions([]);
+        return;
+      }
+
+      try {
+        const result = await api.listDirectory(parentPath);
+        // Filter by partial match (the part after the last /)
+        const filtered = partial
+          ? result.directories.filter(d => d.toLowerCase().startsWith(partial))
+          : result.directories;
+        setDirSuggestions(filtered);
+      } catch {
+        setDirSuggestions([]);
+      }
+    }, 150);
+
+    return () => {
+      if (debounceRef.current) clearTimeout(debounceRef.current);
+    };
+  }, [hasSlash, parentPath, partial]);
+
+  // Combined items for keyboard navigation:
+  //   recent section items + browse section items
+  // Each item is { type, display, value }
+  const menuItems = useMemo(() => {
+    const items: Array<{ type: 'recent' | 'dir'; display: string; value: string; matchLen?: number }> = [];
+    for (const rc of filteredRecentCwds) {
+      items.push({ type: 'recent', display: rc, value: rc });
+    }
+    for (const dirName of dirSuggestions) {
+      items.push({
+        type: 'dir',
+        display: dirName + '/',
+        value: (parentPath === '/' ? '/' : parentPath + '/') + dirName + '/',
+        matchLen: partial.length || undefined,
+      });
+    }
+    return items;
+  }, [filteredRecentCwds, dirSuggestions, parentPath, partial]);
+
+  const hasItems = menuItems.length > 0;
+
+  // Reset selected index when items change
+  useEffect(() => {
+    setSelectedIndex(-1);
+  }, [cwd, hasSlash]);
+
+  // Reset suggestions when command changes (allowedCwdRoots may change)
   useEffect(() => {
     const selected = agentCommands.find(c => c.id === commandId) || agentCommands[0];
     if (!selected) return;
@@ -661,17 +734,45 @@ function CreateSessionModal({ commands, recentCwds, onCreate, onClose, onCreated
             <input
               className="form-input combobox-input"
               value={cwd}
-              onFocus={() => setCwdMenuOpen(cwdOptions.length > 0)}
+              onFocus={() => {
+                if (hasItems) setCwdMenuOpen(true);
+              }}
               onChange={(e) => {
                 setCwdTouched(true);
                 setCwd(e.target.value);
-                setCwdMenuOpen(cwdOptions.length > 0);
+                setCwdMenuOpen(true);
               }}
               onKeyDown={(e) => {
-                if (e.key === 'Escape') setCwdMenuOpen(false);
-                if (e.key === 'ArrowDown' && cwdOptions.length > 0) setCwdMenuOpen(true);
+                if (!cwdMenuOpen) return;
+                if (e.key === 'ArrowDown') {
+                  e.preventDefault();
+                  setSelectedIndex(prev => Math.min(prev + 1, menuItems.length - 1));
+                  return;
+                }
+                if (e.key === 'ArrowUp') {
+                  e.preventDefault();
+                  setSelectedIndex(prev => prev <= 0 ? -1 : prev - 1);
+                  return;
+                }
+                if ((e.key === 'Enter' || e.key === 'Tab') && selectedIndex >= 0 && selectedIndex < menuItems.length) {
+                  e.preventDefault();
+                  const item = menuItems[selectedIndex];
+                  setCwdTouched(true);
+                  setCwd(item.value);
+                  setCwdMenuOpen(false);
+                  setSelectedIndex(-1);
+                  return;
+                }
+                if (e.key === 'Escape') {
+                  setCwdMenuOpen(false);
+                  return;
+                }
               }}
-              onBlur={() => window.setTimeout(() => setCwdMenuOpen(false), 100)}
+              onBlur={() => {
+                window.setTimeout(() => {
+                  setCwdMenuOpen(false);
+                }, 150);
+              }}
               placeholder="/home/pi/projects/my-app"
               aria-autocomplete="list"
               aria-expanded={cwdMenuOpen}
@@ -679,30 +780,76 @@ function CreateSessionModal({ commands, recentCwds, onCreate, onClose, onCreated
             <button
               type="button"
               className="combobox-toggle"
-              onClick={() => setCwdMenuOpen((open) => cwdOptions.length > 0 && !open)}
-              aria-label="Show recent working directories"
+              onClick={() => setCwdMenuOpen((open) => hasItems && !open)}
+              aria-label="Show directory suggestions"
             >
               ▾
             </button>
-            {cwdMenuOpen && cwdOptions.length > 0 && (
+            {cwdMenuOpen && (
               <div className="combobox-menu" role="listbox">
-                {visibleCwdOptions.length > 0 ? visibleCwdOptions.map((recentCwd) => (
-                  <button
-                    key={recentCwd}
-                    type="button"
-                    className="combobox-option"
-                    onMouseDown={(e) => e.preventDefault()}
-                    onClick={() => {
-                      setCwdTouched(true);
-                      setCwd(recentCwd);
-                      setCwdMenuOpen(false);
-                    }}
-                    role="option"
-                  >
-                    {recentCwd}
-                  </button>
-                )) : (
-                  <div className="combobox-empty">No recent path matches. Type new path.</div>
+                {filteredRecentCwds.length > 0 && (
+                  <>
+                    <div className="combobox-section-title">Recent</div>
+                    {filteredRecentCwds.map((recentCwd, idx) => {
+                      const itemIdx = idx;
+                      return (
+                        <button
+                          key={`r-${recentCwd}`}
+                          type="button"
+                          className={`combobox-option ${selectedIndex === itemIdx ? 'combobox-option-selected' : ''}`}
+                          onMouseDown={(e) => e.preventDefault()}
+                          onMouseEnter={() => setSelectedIndex(itemIdx)}
+                          onClick={() => {
+                            setCwdTouched(true);
+                            setCwd(recentCwd);
+                            setCwdMenuOpen(false);
+                          }}
+                          role="option"
+                          aria-selected={selectedIndex === itemIdx}
+                        >
+                          📁 {recentCwd}
+                        </button>
+                      );
+                    })}
+                  </>
+                )}
+                {dirSuggestions.length > 0 && (
+                  <>
+                    {filteredRecentCwds.length > 0 && <div className="combobox-divider" />}
+                    <div className="combobox-section-title">Browse {parentPath}</div>
+                    {dirSuggestions.map((dirName, idx) => {
+                      const itemIdx = filteredRecentCwds.length + idx;
+                      const matchLen = partial.length;
+                      return (
+                        <button
+                          key={`d-${dirName}`}
+                          type="button"
+                          className={`combobox-option ${selectedIndex === itemIdx ? 'combobox-option-selected' : ''}`}
+                          onMouseDown={(e) => e.preventDefault()}
+                          onMouseEnter={() => setSelectedIndex(itemIdx)}
+                          onClick={() => {
+                            setCwdTouched(true);
+                            setCwd((parentPath === '/' ? '/' : parentPath + '/') + dirName + '/');
+                            setCwdMenuOpen(false);
+                          }}
+                          role="option"
+                          aria-selected={selectedIndex === itemIdx}
+                        >
+                          📂 {matchLen > 0 ? (
+                            <>
+                              <span style={{ color: '#22c55e' }}>{dirName.substring(0, matchLen)}</span>
+                              <span>{dirName.substring(matchLen)}/</span>
+                            </>
+                          ) : (
+                            <span>{dirName}/</span>
+                          )}
+                        </button>
+                      );
+                    })}
+                  </>
+                )}
+                {!hasItems && (
+                  <div className="combobox-empty">No matches. Type a path to browse.</div>
                 )}
               </div>
             )}

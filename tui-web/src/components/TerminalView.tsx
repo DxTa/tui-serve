@@ -38,6 +38,7 @@ export default function TerminalView({ session, host, onBack, onSessionUpdate }:
   const proxySyncingFromProxyRef = useRef(false);
   const mobileProxyScrollRafRef = useRef<number | null>(null);
   const proxyPointerStartYRef = useRef<number | null>(null);
+  const restoreFocusAfterControlKeyRef = useRef(false);
   const [isMobileTerminal, setIsMobileTerminal] = useState(false);
   const mobileInputBridgeRef = useRef<HTMLInputElement>(null);
 
@@ -482,22 +483,38 @@ export default function TerminalView({ session, host, onBack, onSessionUpdate }:
     });
   };
 
-  // Belt-and-suspenders: window-level keydown capture to preventDefault browser
-  // shortcuts when terminal is focused. xterm's attachCustomKeyEventHandler
-  // handles the primary interception (above), this is defense-in-depth.
+  // Belt-and-suspenders: window-level key handling to keep desktop control
+  // keys inside xterm. xterm's attachCustomKeyEventHandler handles primary
+  // input translation; this prevents browser defaults and restores focus if
+  // Chrome/desktop shell still blurs the hidden textarea after ESC/TAB.
   //
   // On desktop, ESC and TAB must reach xterm's hidden textarea so they
   // generate \x1b and \t via onData. Without preventDefault:
   //   - TAB moves focus to the next focusable element (browser default)
-  //   - ESC can trigger browser back-navigation or exit fullscreen
+  //   - ESC can trigger browser back-navigation, exit fullscreen, or blur input
   // On mobile these keys work via MobileKeyBar buttons that call sendKey()
   // directly, so this handler only matters for desktop/physical keyboards.
   useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
+    const isTerminalTextareaFocused = () => {
       const textarea = document.querySelector('.xterm-helper-textarea');
-      if (!textarea || document.activeElement !== textarea) return;
+      return !!textarea && document.activeElement === textarea;
+    };
+
+    const restoreTerminalFocus = () => {
+      if (!restoreFocusAfterControlKeyRef.current || isTouchDevice()) return;
+      requestAnimationFrame(() => {
+        if (!restoreFocusAfterControlKeyRef.current) return;
+        terminalRef.current?.focus();
+        restoreFocusAfterControlKeyRef.current = false;
+      });
+    };
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (!isTerminalTextareaFocused()) return;
       if (e.key === 'Escape' || e.key === 'Tab') {
+        restoreFocusAfterControlKeyRef.current = true;
         e.preventDefault();
+        restoreTerminalFocus();
       }
       if (e.ctrlKey && !e.altKey && !e.metaKey && !e.shiftKey) {
         switch (e.key) {
@@ -509,8 +526,24 @@ export default function TerminalView({ session, host, onBack, onSessionUpdate }:
         }
       }
     };
+
+    const handleKeyUp = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' || e.key === 'Tab') restoreTerminalFocus();
+    };
+
+    const handleFocusOut = (e: FocusEvent) => {
+      if (!(e.target instanceof HTMLElement) || !e.target.classList.contains('xterm-helper-textarea')) return;
+      restoreTerminalFocus();
+    };
+
     window.addEventListener('keydown', handleKeyDown, true);
-    return () => window.removeEventListener('keydown', handleKeyDown, true);
+    window.addEventListener('keyup', handleKeyUp, true);
+    window.addEventListener('focusout', handleFocusOut, true);
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown, true);
+      window.removeEventListener('keyup', handleKeyUp, true);
+      window.removeEventListener('focusout', handleFocusOut, true);
+    };
   }, []);
 
   const getTerminalTextarea = (root: ParentNode | null = document) =>
